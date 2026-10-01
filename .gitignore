@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+.next/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Rust / Anchor build output
+target/
+.anchor/
+test-ledger/
+
+# Environment files: only the example is ever committed
+.env
+.env.*
+!.env.example
+
+# Keypairs, wallets and other key material
+*-keypair.json
+*.keypair
+id.json
+*.wallet.json
+*-wallet.json
+/wallets/
+/keypairs/
+*.pem
+*.key
+
+# Local database artifacts
+pgdata/
+.pgdata/
+*.sql.dump
+*.sqlite
+*.sqlite3
+
+# Logs and OS/editor noise
+*.log
+.DS_Store
+Thumbs.db

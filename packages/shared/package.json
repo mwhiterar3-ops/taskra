@@ -1,0 +1,25 @@
+{
+  "name": "@taskra/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./env/public": {
+      "types": "./dist/env/public.d.ts",
+      "default": "./dist/env/public.js"
+    },
+    "./env/server": {
+      "types": "./dist/env/server.d.ts",
+      "default": "./dist/env/server.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "bs58": "6.0.0",
+    "zod": "4.6.5"
+  }
+}

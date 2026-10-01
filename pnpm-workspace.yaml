@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Dependency install scripts are denied unless listed here as true.
+# esbuild's postinstall is only a self-check; the binary ships as an optional dependency.
+allowBuilds:
+  esbuild: false
+
+saveExact: true

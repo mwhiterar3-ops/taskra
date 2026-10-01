@@ -1,0 +1,37 @@
+{
+  "name": "taskra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @taskra/api db:migrate",
+    "anchor:build": "anchor build",
+    "anchor:test": "anchor test",
+    "anchor:fmt": "cargo fmt --all --check",
+    "anchor:lint": "cargo clippy --workspace --all-targets -- -D warnings"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@next/eslint-plugin-next": "16.3.8",
+    "@types/node": "24.19.0",
+    "eslint": "10.11.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.9",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.0",
+    "vitest": "5.0.3"
+  }
+}

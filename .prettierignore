@@ -1,0 +1,11 @@
+node_modules
+dist
+.next
+out
+coverage
+target
+.anchor
+pnpm-lock.yaml
+next-env.d.ts
+# The specification pack is hand-formatted; do not let Prettier rewrite it.
+*.md
