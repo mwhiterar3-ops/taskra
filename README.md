@@ -4,7 +4,7 @@ Taskra is a Solana-native trust and settlement layer for verifiable technical
 work: a client escrows USDC, a developer proves completed work with GitHub
 evidence, and settlement builds the developer's reputation.
 
-## Status: Phase 1 complete (Anchor program)
+## Status: Phase 2 complete (SDK)
 
 | Area | State |
 |---|---|
@@ -13,8 +13,16 @@ evidence, and settlement builds the developer's reputation.
 | Web: minimal Next.js app (root page only) | Done |
 | API: Node.js/TypeScript with `GET /health` | Done |
 | Local PostgreSQL (docker-compose) and empty migration setup | Done |
-| Anchor program: escrow, attestation, settlement, disputes | Done; tested on LiteSVM; **not deployed to any cluster** |
-| SDK, database schema, API endpoints, GitHub verification, product UI | Not started |
+| Anchor program: escrow, attestation, settlement, disputes | Done; tested on LiteSVM and a local validator; **not deployed to any public cluster** |
+| SDK (`packages/sdk`): addresses, unsigned instructions, decoders, hashes, timeline | Done; see [packages/sdk/README.md](packages/sdk/README.md) |
+| Database schema, API endpoints, GitHub verification, product UI | Not started |
+
+The SDK never signs and never holds keys. `pnpm sdk:validator-loop` proves it
+against a real `solana-test-validator`: it creates an SPL mint, initializes the
+platform with a short-window test profile and runs approval, review expiry,
+cancellation and both dispute-fallback branches, printing every signature and
+balance. Layer boundaries for the next phases are in
+[docs/14-API-CONTRACT.md](docs/14-API-CONTRACT.md).
 
 The program has 14 instructions (docs/13-DECISIONS.md §3.7). Its tests live in
 `programs/taskra/tests`:
@@ -57,7 +65,7 @@ API (apps/api, Node.js/TypeScript) ── reads and verifies via RPC ──► S
         ├─► PostgreSQL (metadata, evidence, verification results, cached reputation)
         └─► GitHub (OAuth identity, pull-request checks)
 
-packages/sdk     PDA derivation, instruction builders, account decoding (Phase 2)
+packages/sdk     PDA derivation, unsigned instruction builders, account decoding, hashes
 packages/shared  Typed environment contract shared by web and API
 ```
 
@@ -70,7 +78,8 @@ state after reading it from the chain. The API never holds user keys or funds.
 ```text
 apps/web          Next.js web application
 apps/api          Node.js/TypeScript API and database migrations
-packages/sdk      Solana SDK (empty until Phase 2)
+packages/sdk      Solana SDK (never signs; see its README)
+scripts/          Validator loop, mutation check, devnet deploy
 packages/shared   Shared environment loader
 programs/taskra   Anchor program
 docs/             Specification pack
@@ -123,6 +132,10 @@ documented in [docs/10-ENVIRONMENT-SPEC.md](docs/10-ENVIRONMENT-SPEC.md).
 | `pnpm anchor:build` | Build the Anchor program (needs the WSL toolchain) |
 | `pnpm anchor:test` | Run program tests (none exist until Phase 1) |
 | `pnpm anchor:fmt` / `pnpm anchor:lint` | `cargo fmt --check` / `cargo clippy -D warnings` |
+| `pnpm sdk:idl` | Regenerate the SDK's IDL module after `anchor build` |
+| `pnpm sdk:validator-loop` | End-to-end SDK run against a local validator (about 3 minutes) |
+| `scripts/mutation-check.sh` | Seed eight defects into the program; all must be caught |
+| `scripts/deploy-devnet.sh --dry-run` | Preview the devnet deployment ([docs/11](docs/11-DEPLOYMENT-SPEC.md)); the owner runs the real one |
 
 ## Build order
 

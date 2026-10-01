@@ -21,7 +21,9 @@
     "anchor:build": "anchor build",
     "anchor:test": "anchor test",
     "anchor:fmt": "cargo fmt --all --check",
-    "anchor:lint": "cargo clippy --workspace --all-targets -- -D warnings"
+    "anchor:lint": "cargo clippy --workspace --all-targets -- -D warnings",
+    "sdk:idl": "pnpm --filter @taskra/sdk idl:sync",
+    "sdk:validator-loop": "bash scripts/validator-loop.sh"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

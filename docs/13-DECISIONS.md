@@ -865,6 +865,9 @@ cluster has its own Platform account, so each deployment picks one profile.
 | `evidence.rs` | The hash test vectors of §5.3 and §10.3; an attestation for one hash cannot settle another; an arbitrary hash never pays by itself. |
 | `randomized.rs` | Random instructions, signers and clock advances; after every step escrow equals the amount or the task is terminal with escrow closed, payouts never exceed the amount, and at most one terminal outcome occurs. |
 | `scripts/mutation-check.sh` | Eight seeded defects, each of which the suite must catch. |
+| `sdk_vectors.rs` | PDA addresses and error codes equal the literals the TypeScript SDK asserts. |
+| `packages/sdk` unit tests | Every PDA, all 14 instruction builders, decoders, enum and error parity with the IDL, fee and hash vectors, timeline vectors, and that no shipped SDK source imports a key or signing API. |
+| `scripts/validator-loop.sh` | The SDK against a real `solana-test-validator` and a real SPL mint: approval, review expiry, cancellation and both dispute-fallback branches. It uses a test-only profile (review 10 s, grace 5 s, dispute timeout 8 s), which is not a deploy profile. |
 
 The randomized suite always runs the fixed seed `0x7A5C2026` and the range
 `0..TASKRA_FUZZ_SEEDS` (default 48), each for `TASKRA_FUZZ_STEPS` steps (default

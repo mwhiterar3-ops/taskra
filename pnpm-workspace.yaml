@@ -4,7 +4,13 @@ packages:
 
 # Dependency install scripts are denied unless listed here as true.
 # esbuild's postinstall is only a self-check; the binary ships as an optional dependency.
+# bigint-buffer, bufferutil and utf-8-validate (pulled in by @solana/web3.js and
+# its websocket client) only compile optional native accelerators; each falls
+# back to pure JavaScript without them.
 allowBuilds:
+  bigint-buffer: false
+  bufferutil: false
   esbuild: false
+  utf-8-validate: false
 
 saveExact: true
