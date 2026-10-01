@@ -4,7 +4,7 @@ Taskra is a Solana-native trust and settlement layer for verifiable technical
 work: a client escrows USDC, a developer proves completed work with GitHub
 evidence, and settlement builds the developer's reputation.
 
-## Status: Phase 1 (Anchor program)
+## Status: Phase 1 complete (Anchor program)
 
 | Area | State |
 |---|---|
@@ -13,8 +13,20 @@ evidence, and settlement builds the developer's reputation.
 | Web: minimal Next.js app (root page only) | Done |
 | API: Node.js/TypeScript with `GET /health` | Done |
 | Local PostgreSQL (docker-compose) and empty migration setup | Done |
-| Anchor program: escrow, attestation, settlement, disputes | In progress (Phase 1) |
+| Anchor program: escrow, attestation, settlement, disputes | Done; tested on LiteSVM; **not deployed to any cluster** |
 | SDK, database schema, API endpoints, GitHub verification, product UI | Not started |
+
+The program has 14 instructions (docs/13-DECISIONS.md §3.7). Its tests live in
+`programs/taskra/tests`:
+
+| File | Covers |
+|---|---|
+| `lifecycle.rs` | Every transition on its intended path, with exact fund movements |
+| `authorization.rs` | Wrong signers, wrong mints, wrong token accounts, third-party destinations, key separation |
+| `exclusivity.rs` | Double settlement, races, deadline boundaries, mutual exclusion of outcome paths |
+
+The tests load `target/deploy/taskra.so`, so run `anchor build` first
+(`pnpm anchor:test` does both).
 
 ## Specification pack
 
