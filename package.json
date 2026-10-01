@@ -10,9 +10,10 @@
   "scripts": {
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint .",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "build:packages": "pnpm --filter \"./packages/*\" build",
+    "lint": "pnpm build:packages && eslint .",
+    "typecheck": "pnpm build:packages && pnpm -r typecheck",
+    "test": "pnpm build:packages && pnpm -r test",
     "build": "pnpm -r build",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",

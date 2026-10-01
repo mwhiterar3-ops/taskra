@@ -1,0 +1,4 @@
+# Resolve dependencies to versions that support the pinned toolchain
+# (rust-version in Cargo.toml) instead of the newest release.
+[resolver]
+incompatible-rust-versions = "fallback"

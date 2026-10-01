@@ -1,4 +1,3 @@
-# Program tests run in-process on LiteSVM via `cargo test`, so no validator is started.
 skip_local_validator = true
 
 [toolchain]
@@ -11,7 +10,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-taskra = "Er3LnCob3phcQUU9Sjz4dWq5xr5GD2SmasDg31vcwFGb"
+taskra = "CCgMR2BZ7Hr4SiMRPYsY6yzZsGgddygjH3eF8A939mkZ"
 
 [provider]
 cluster = "localnet"
@@ -19,3 +18,5 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "cargo test"
+
+[hooks]
