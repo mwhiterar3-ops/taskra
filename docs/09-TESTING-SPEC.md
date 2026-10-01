@@ -31,6 +31,19 @@ test mint and clock warping. Test:
 - deadline boundaries
 - every mutual-exclusion case in `13-DECISIONS.md` §2.6
 - key rotation
+- the worst-case client-fund lock against the formula in `13-DECISIONS.md` §2.7
+- the published hash test vectors (`13-DECISIONS.md` §5.3, §10.3)
+- an attestation for one evidence hash cannot settle another
+- the fee is charged on the principal only; stray deposits follow the principal
+
+Randomized sequences (random instructions, signers and clock advances) must hold
+these invariants after every step: escrow equals the task amount, or the task is
+terminal with escrow closed; total tokens paid out never exceed the amount; at
+most one terminal outcome occurs. A fixed seed always runs, plus a seed range
+sized by `TASKRA_FUZZ_SEEDS` / `TASKRA_FUZZ_STEPS`.
+
+`scripts/mutation-check.sh` seeds eight defects into the program one at a time;
+the suite must catch every one.
 
 Reliability rewards are deferred from the MVP, so there is no reward-cap test.
 

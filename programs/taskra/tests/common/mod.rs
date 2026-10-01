@@ -168,8 +168,18 @@ impl Env {
     /// Deploys the program, creates the test mint and treasury, and initializes
     /// the platform with the production defaults (2.5%, 48h, 24h, 7d).
     pub fn new() -> Self {
+        Self::with_windows(REVIEW_WINDOW, VERIFICATION_GRACE, DISPUTE_TIMEOUT)
+    }
+
+    /// Like `new`, but with the given time windows (a different deploy profile).
+    pub fn with_windows(review_window: i64, verification_grace: i64, dispute_timeout: i64) -> Self {
         let mut env = Self::uninitialized();
-        let args = env.default_init_args();
+        let args = InitializePlatformArgs {
+            review_window,
+            verification_grace,
+            dispute_timeout,
+            ..env.default_init_args()
+        };
         let accounts = env.initialize_accounts();
         ok(env.initialize(accounts, args));
         env

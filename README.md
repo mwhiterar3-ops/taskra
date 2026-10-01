@@ -24,9 +24,18 @@ The program has 14 instructions (docs/13-DECISIONS.md §3.7). Its tests live in
 | `lifecycle.rs` | Every transition on its intended path, with exact fund movements |
 | `authorization.rs` | Wrong signers, wrong mints, wrong token accounts, third-party destinations, key separation |
 | `exclusivity.rs` | Double settlement, races, deadline boundaries, mutual exclusion of outcome paths |
+| `client_lock.rs` | Worst-case client-fund lock equals the documented formula, for three window profiles |
+| `evidence.rs` | Hash test vectors; an attestation for one hash cannot settle another; an arbitrary hash never pays by itself |
+| `randomized.rs` | Random instructions, signers and clock advances with invariants checked after every step |
 
 The tests load `target/deploy/taskra.so`, so run `anchor build` first
 (`pnpm anchor:test` does both).
+
+`randomized.rs` always runs seed `0x7A5C2026` plus seeds `0..TASKRA_FUZZ_SEEDS`
+(default 48) for `TASKRA_FUZZ_STEPS` steps each (default 60); set both higher for
+a longer run. `scripts/mutation-check.sh` seeds eight defects into the program,
+one at a time, and fails unless the suite catches every one (it needs a clean
+working tree and takes several minutes).
 
 ## Specification pack
 

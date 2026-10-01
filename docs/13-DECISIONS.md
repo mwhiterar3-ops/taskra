@@ -24,7 +24,7 @@ implementation details chosen under the owner's delegated judgment.
 | D8 | Client inaction | Must not lock escrow indefinitely. The developer may move `SUBMITTED` to `DISPUTED` after the review window passes with no client action (exact preconditions in §2.4). Mutual exclusion of all outcome paths is proven in §2.6 and tested. |
 | D9 | Accept-squatting | Documented MVP limitation. No mitigation is built. The client-set `work_duration` bounds the damage. |
 | D10 | Minimum amount | `amount > 0` only. A task whose fee floors to zero must settle correctly. |
-| D11 | Terms hash | SHA-256 of canonical task terms `{repo, acceptance_criteria, work_duration, amount}` is stored on-chain at creation (§5.2). Full metadata stays off-chain. |
+| D11 | Terms hash | SHA-256 over the domain-separated encoding of `{repo, acceptance_criteria, work_duration, amount}` with prefix `taskra:terms:v1`, stored on-chain at creation (§5.3). Full metadata stays off-chain. |
 | D12 | Work record | No separate WorkRecord. The Task account is the on-chain record and is never closed. |
 | D13 | Task ID | 16-byte UUID (§5.1). |
 | D14 | Keys | Platform authority, attester and treasury are three separate keys. Platform authority and program upgrade authority are separate keys. Never store user private keys or seed phrases. No privileged backend key beyond the approved attester. Development credentials are devnet/test only. |
@@ -34,6 +34,9 @@ implementation details chosen under the owner's delegated judgment.
 | D18 | Create + fund | One atomic on-chain operation. Unfunded tasks do not exist on-chain; drafts exist only in the database (§4). |
 | D19 | Product defaults | Next.js web; separate Node.js/TypeScript API; pnpm monorepo; one wallet identity per user; any wallet other than the task client may accept; GitHub pull requests are the only MVP evidence type; the client names the target repository at task creation. |
 | D20 | Toolchain | Ubuntu on WSL; repository at `~/taskra`; versions pinned in §12. |
+| D21 | Evidence hash | SHA-256 over the domain-separated, fixed-field-order encoding of `{repo, pr_number, head_sha}` with prefix `taskra:evidence:v1` (§10.3). This replaces `merge_commit_sha` everywhere. `submit_work` stays generic: any non-zero hash. |
+| D22 | Developer-dispute timing | Unchanged after review. A developer who submits junk can delay the client's refund but can never be paid by it; the bound and the rationale are in §2.7. An attester "REJECTED" record is **not** implemented and would need explicit approval. |
+| D23 | Deploy profiles | Time windows are deploy-time configuration, immutable after `initialize_platform`. Production and devnet-demo values are in §15. |
 
 ---
 
@@ -232,6 +235,101 @@ Part 1, no interleaving yields a double outcome or a double transfer. ∎
 
 The tests in `programs/taskra/tests` exercise each pair at its boundary.
 
+### 2.7 Client-fund lock under the junk-submission path (D22)
+
+**The attack.** A developer accepts a task, submits a meaningless hash, and
+stalls: no attestation is produced, the client does nothing, and the developer
+opens the dispute path only to delay the refund.
+
+**Timeline, derived from the program.** `A` = `accepted_at`, `WD` =
+`work_duration`, `G` = `verification_grace`, `RW` = `review_window`, `T` =
+`dispute_timeout`, `S` = time of the (last) submission. Production values:
+`G` = 24 h, `RW` = 48 h, `T` = 7 d.
+
+| Quantity | Formula | Set in |
+|---|---|---|
+| Work deadline `W` | `A + WD` | `accept_task` |
+| Verification deadline `V` | `W + G` | `accept_task` |
+| Developer dispute opens after `D` | `max(S + RW, V)` | `submit_work` |
+| Developer dispute closes at, client refund opens after `R` | `D + RW` | `submit_work` |
+| Dispute deadline `DD` | `disputed_at + T` | `open_developer_dispute` |
+
+`submit_work` requires `S ≤ W`, and every resubmission recomputes `D` and `R`
+from the new `S`, so the latest possible values are reached with `S = W`.
+
+| Scenario | Client funds recoverable from | Production |
+|---|---|---|
+| (i) Junk submitted at the work deadline (`S = W`), no escalation | `R + 1 s` = `W + max(RW, G) + RW + 1 s` | `W + 96 h` |
+| (ii) Junk submitted early (`S + RW ≤ V`), no escalation or resubmission | `R + 1 s` = `W + G + RW + 1 s` | `W + 72 h` |
+| (iii) Junk at the deadline, developer escalates at the last second (`disputed_at = R`), authority absent | `DD + 1 s` = `W + max(RW, G) + RW + T + 1 s` | `W + 11 d` |
+
+In (i) and (ii) the client signs `refund_expired`. In (iii) anyone may call
+`expire_dispute`, which refunds the client because no valid attestation exists.
+
+**Maximum client-fund lock.** Measured from acceptance, with every other party
+absent:
+
+```text
+max_lock = work_duration + max(review_window, verification_grace) + review_window + dispute_timeout
+```
+
+The funds are recoverable one second after `accepted_at + max_lock`. With
+production values this is `work_duration + 11 days`. The bound is tight (scenario
+iii reaches it) and cannot be exceeded:
+
+- Before acceptance there is no lock; the client can cancel at any time.
+- Resubmission is impossible after `W`, so `R` cannot move past
+  `W + max(RW, G) + RW`.
+- The developer dispute is **one-shot**. `DISPUTED` has no transition back to
+  `SUBMITTED`, and `submit_work` is rejected in `DISPUTED`, so the dispute cannot
+  be reopened, extended or repeated.
+- The platform authority can end the dispute earlier with `resolve_dispute`. The
+  `dispute_timeout` term applies only when the authority is absent as well.
+
+**Junk and "client refuses to merge" are indistinguishable on-chain.** In both
+cases the task is `SUBMITTED` with a non-zero hash and no attestation; the
+program sees nothing else. A rule that refunds the junk case sooner would refund
+the unmerged-but-genuine case sooner too. The delay is therefore the price of
+giving an honest developer, whose finished work the client will not merge, time
+to escalate and a chance to be heard by the authority.
+
+**The attack yields delay only.** From `SUBMITTED` without a valid attestation,
+the developer can be paid in exactly two ways, and neither is under the
+developer's control: the client signs `approve_task`, or the platform authority
+signs `resolve_dispute(PayDeveloper)`. `expire_review` requires `UNDER_REVIEW`,
+which requires an attestation. `expire_dispute` pays the developer only with a
+valid attestation and otherwise refunds the client. The junk submitter spends
+transaction fees, gains nothing, and ends with a public on-chain record of a
+task refunded as `NeverVerified` or `DisputeExpiredForClient`.
+
+**Options evaluated.**
+
+| Option | Result |
+|---|---|
+| One-shot developer dispute | Already true of the state machine (above). No change needed. |
+| Shorter windows through deploy configuration | Supported today: all three windows are `initialize_platform` arguments. Shortening `dispute_timeout` reduces `max_lock` one-for-one; shortening `review_window` reduces it two-for-one. See §15. No code change. |
+| Shorter developer-dispute window (for example `verification_grace` instead of `review_window`) | Would cut 24 h from the production bound but also from an honest developer's time to react. Not adopted; the locked windows stand. |
+| Attester "REJECTED" record | **Not implemented. Needs explicit approval.** See below. |
+
+**Attester "REJECTED" record (option only).** The attester would be allowed to
+record that the current submission failed verification, and that record would
+open the client's refund immediately instead of after `R`. It would reduce the
+junk-path lock to roughly `work_duration + verification_grace`.
+
+It is a new attester power. Today a stolen or misbehaving attester key can only
+start a review window that the client can still reject. With a REJECTED record,
+the same key could close the developer's dispute path: an attester colluding
+with a client, a compromised key, or a verifier bug that misreads a GitHub
+outage, could mark genuine work rejected and let the client take an immediate
+refund with no recourse to the authority. That contradicts the locked property
+that the attester writes an attestation and nothing else, and that its
+compromise cannot cause funds to leave escrow. It is recorded here as an option
+and nothing more.
+
+**Decision.** The implementation is unchanged. `client_lock.rs` computes the
+worst case from the program for three window profiles and asserts it equals
+`max_lock` above, to the second.
+
 ---
 
 ## 3. Account and PDA model
@@ -393,22 +491,59 @@ A 16-byte UUID (version 4), generated by the API when the draft is created.
 `client_pubkey` is in the seeds so that nobody who learns a draft's UUID can
 create the PDA first and block the real client.
 
-### 5.2 Terms hash (D11)
+### 5.2 Hash encoding
 
-`terms_hash = SHA-256(UTF-8 bytes of the canonical JSON)`, where the canonical
-JSON is one object serialised per RFC 8785 (JSON Canonicalization Scheme) with
-exactly these members:
+Both off-chain hashes (terms and evidence) use one encoding:
 
-| Key | Type | Value |
+```text
+hash = SHA-256( PREFIX || LP(field_1) || LP(field_2) || ... || LP(field_n) )
+LP(x) = the byte length of x as a 4-byte big-endian unsigned integer, followed by x
+```
+
+- `PREFIX` is the ASCII domain-separation tag, with no terminator and no length
+  prefix.
+- Every field is a UTF-8 string. Numbers are written in decimal ASCII with no
+  sign, no leading zeros and no separators (`0` is `0`).
+- Fields appear in the fixed order given for each hash. There are no optional
+  fields.
+- The length prefixes make field boundaries unambiguous; the domain prefix makes
+  an evidence hash and a terms hash different even for identical fields.
+- The digest is 32 raw bytes on-chain and 64 lower-case hex characters in the
+  database.
+
+A reference encoder and the vectors below are executed by
+`programs/taskra/tests/evidence.rs`.
+
+### 5.3 Terms hash (D11)
+
+`PREFIX = "taskra:terms:v1"`. Fields, in order:
+
+| # | Field | Value |
 |---|---|---|
-| `acceptance_criteria` | string | The acceptance criteria text exactly as stored. |
-| `amount` | string | Token base units as a decimal string with no leading zeros (a string because `u64` exceeds the JSON safe-integer range). |
-| `repo` | string | `owner/name`, ASCII lower-cased. |
-| `work_duration` | integer | Seconds. |
+| 1 | `repo` | `owner/name`, ASCII lower-cased, no scheme, host or `.git`. |
+| 2 | `acceptance_criteria` | The text, Unicode NFC-normalized and then trimmed. |
+| 3 | `work_duration` | Integer seconds, decimal. |
+| 4 | `amount` | Token base units, decimal string. |
+
+"Trimmed" means leading and trailing code points removed exactly as ECMAScript
+`String.prototype.trim` removes them: U+0009–U+000D, U+0020, U+00A0, U+1680,
+U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF. Normalize
+first, then trim. Interior whitespace and line breaks are not altered, so the
+normalized text is what must be stored and displayed.
 
 The program stores the 32 bytes and requires them to be non-zero; it cannot
 recompute them. The API and the frontend recompute the hash from the stored
 metadata and refuse to treat metadata as authoritative when it does not match.
+
+Test vectors:
+
+| # | `repo` | `acceptance_criteria` | `work_duration` | `amount` | `terms_hash` |
+|---|---|---|---|---|---|
+| T1 | `octo-org/parser` | `Parses transaction signatures` + U+000A + `Returns structured output` | `172800` | `100000000` | `30847829aaee28ae7add3254b2f0bf44a262467ed115d4f87d041bd53f50c066` |
+| T2 | `a/b` | raw: two spaces, `Cafe`, U+0301, ` tests pass `, U+000A | `1` | `1` | `f3bfcae9cdec77ec36a7223c7c8da9ce001e7d95a9ad72cbb10cd23d0130934c` |
+
+In T2 the raw text normalizes to `Café tests pass` (with U+00E9; 16 UTF-8
+bytes). Hashing that normalized text directly gives the same digest.
 
 ---
 
@@ -435,9 +570,9 @@ Performed by the API against the GitHub REST API and stored in PostgreSQL.
 
 | Element | Definition |
 |---|---|
-| GitHub evidence | Repository (`owner/name`, bound to the task at creation), PR number, PR author, `merged_by`, merge commit SHA, merge timestamp, repository `created_at`. |
+| GitHub evidence | Repository (`owner/name`, bound to the task at creation), PR number, PR author, `merged_by`, head commit SHA, merge timestamp, repository `created_at`. |
 | Verification status | `PENDING`, `VERIFIED` or `REJECTED`, with one auditable reason per failed rule (§10). |
-| Evidence hash | SHA-256 of the canonical JSON in §10.3; the same value the developer records on-chain. |
+| Evidence hash | The hash defined in §10.3, recomputed by the verifier from GitHub's data; it must equal the value the developer recorded on-chain. |
 | Verification timestamp | UTC time the check ran. Results are append-only. |
 | Verifier identity | The API deployment and rule-set version that produced the result, the GitHub response metadata, the attester public key and the attestation transaction signature. |
 | Failure / PENDING | A GitHub API error, rate limit or timeout produces `PENDING` and is retryable. It never produces `VERIFIED`. |
@@ -545,34 +680,80 @@ Implemented off-chain in Phase 4.
 | R6 | `merged_by` differs from the PR author. Self-merge is REJECTED. | REJECTED |
 | R7 | The merge timestamp is after task acceptance. | REJECTED |
 | R8 | The merge timestamp is at or before the work deadline. | REJECTED |
-| R9 | Any GitHub API failure, rate limit or timeout. | PENDING, retryable; never VERIFIED |
+| R9 | The evidence hash recomputed from GitHub's data (the task's repository, the PR number, and the merged PR's final head SHA) equals the `evidence_hash` on the Task account. | REJECTED |
+| R10 | Any GitHub API failure, rate limit or timeout. | PENDING, retryable; never VERIFIED |
+
+The verifier never trusts a hash, head SHA or repository name supplied in a
+request: it fetches the PR from GitHub, recomputes the hash itself and compares
+it with the on-chain value (R9).
 
 CI or test status is **informational only**. Taskra verifies evidence against
 these conditions; it does not claim a merged PR proves the work is correct.
 
 ### 10.2 Statuses
 
-`PENDING`, `VERIFIED` (all of R1–R8 hold), `REJECTED` (at least one of R1–R8
+`PENDING`, `VERIFIED` (all of R1–R9 hold), `REJECTED` (at least one of R1–R9
 fails on real data). Every result stores which rules passed and failed.
 
-### 10.3 Evidence hash
+### 10.3 Evidence hash (D21)
 
-`evidence_hash = SHA-256(UTF-8 bytes of the canonical JSON)`
+Encoding per §5.2 with `PREFIX = "taskra:evidence:v1"`. Fields, in order:
 
-One object with exactly these three members:
+| # | Field | Value |
+|---|---|---|
+| 1 | `repo` | `owner/name`, ASCII lower-cased, no scheme, host or `.git`. |
+| 2 | `pr_number` | The pull request number, decimal. |
+| 3 | `head_sha` | The PR's head commit SHA: 40 lower-case hexadecimal characters. |
 
-- Keys in ascending order: `merge_commit_sha`, `pr_number`, `repo`.
-- No whitespace outside string values.
-- `merge_commit_sha`: 40 lower-case hexadecimal characters.
-- `pr_number`: JSON integer, no leading zeros, fraction or exponent.
-- `repo`: `owner/name`, ASCII lower-cased, no scheme, host or `.git`.
+`head_sha` replaces `merge_commit_sha`. A head SHA exists for every pull request,
+merged or not, so a developer can always compute and submit a hash.
 
-```json
-{"merge_commit_sha":"0123456789abcdef0123456789abcdef01234567","pr_number":42,"repo":"octo-org/parser"}
+Test vectors:
+
+| # | `repo` | `pr_number` | `head_sha` | `evidence_hash` |
+|---|---|---|---|---|
+| E1 | `octo-org/parser` | `42` | `0123456789abcdef0123456789abcdef01234567` | `926d8ba0f3545c78cdd042d93f7269e67a984224d834bce7a2f379a1303ceef1` |
+| E2 | `a/b` | `1` | `ffffffffffffffffffffffffffffffffffffffff` | `284d3265700774db64c4afa8da7fb252ca9979bbcab298cf379aed52b01791cf` |
+| E3 | `octo-org/parser` | `42` | `0123456789abcdef0123456789abcdef01234568` | `96c47c4da14961d66d9bfd7844bce5ed80a4bfa7781a0fd29c149f5011749190` |
+
+E3 is E1 with one more commit on the PR: a different head SHA gives an unrelated
+hash. The full preimage of E2, in hex, is:
+
+```text
+7461736b72613a65766964656e63653a7631              "taskra:evidence:v1"
+00000003 612f62                                   LP("a/b")
+00000001 31                                       LP("1")
+00000028 66666666666666666666666666666666666666666666666666666666666666666666666666666666
+                                                  LP("ffff...ffff", 40 bytes)
 ```
 
-The digest is 32 raw bytes on-chain and 64 lower-case hex characters in the
-database.
+### 10.4 Evidence lifecycle
+
+1. **Submission is generic.** `submit_work` accepts any non-zero 32 bytes. The
+   program cannot check what they are a hash of, and does not need to: the hash
+   authorizes nothing by itself. Money leaves escrow for the developer only
+   through `approve_task` (the client's signature), `resolve_dispute` (the
+   authority's signature), or an attestation, and an attestation is bound to the
+   task, to this exact hash and to this submission nonce (§7.3).
+2. **Verification.** The verifier loads the PR from GitHub, checks R1–R8,
+   recomputes the hash from GitHub's own data (R9) and attests only if it equals
+   the hash on the Task account. A hash of anything else, including a made-up
+   value, can never match, so it can never be attested.
+3. **Merged PR.** The final head SHA is fixed at merge. If the developer
+   submitted the hash for that head, verification succeeds, the attestation is
+   recorded and the review window starts.
+4. **Unmerged PR.** R4 fails, so there is no attestation and the task stays
+   `SUBMITTED`. The developer-dispute path applies (§2.4): the developer may
+   escalate, and the authority decides on the merits; otherwise the client is
+   refunded.
+5. **Later commits.** Any new commit changes `head_sha`, so the previously
+   submitted hash no longer matches GitHub and R9 fails. The developer must
+   resubmit the new hash, which starts a new submission nonce and voids any
+   earlier attestation. Resubmission is possible until the work deadline.
+6. **Arbitrary hash.** A developer-chosen arbitrary hash can produce delay and
+   nothing else: it is never attested, so it follows the junk path analysed in
+   §2.7 and ends in a client refund unless the client or the authority chooses to
+   pay.
 
 ---
 
@@ -636,5 +817,55 @@ Reversible implementation details, recorded for transparency.
 | L1 | Accept-squatting (D9). |
 | L2 | The residual collusion assumption of Option B (§7.5). |
 | L3 | The program is upgradeable; the upgrade authority is fully trusted. |
-| L4 | The evidence hash in §10.3 needs a merge commit. What a developer records on-chain for a PR the client has not merged (the developer-dispute case) is not yet defined and must be decided before Phase 4. The program accepts any non-zero hash. |
+| L4 | A junk submission can delay the client's refund by up to `work_duration + max(review_window, verification_grace) + review_window + dispute_timeout` after acceptance (production: `work_duration + 11 days`) when the authority is absent (§2.7). It can never produce a payment. |
 | L5 | A treasury token account that is closed or frozen blocks developer-paying settlements until the authority rotates it. |
+| L6 | An unmerged PR can never be VERIFIED. A developer whose work the client will not merge depends on the authority's decision in a dispute; if the authority is absent the client is refunded. |
+
+---
+
+## 15. Deploy profiles (D23)
+
+The fee and the three time windows are arguments of `initialize_platform`. They
+are written once and **cannot be changed afterwards**; only keys rotate. Each
+cluster has its own Platform account, so each deployment picks one profile.
+
+| Parameter | Production | Devnet demo |
+|---|---|---|
+| `fee_bps` | 250 | 250 |
+| `review_window` | 172 800 s (48 h) | 600 s (10 min) |
+| `verification_grace` | 86 400 s (24 h) | 300 s (5 min) |
+| `dispute_timeout` | 604 800 s (7 d) | 900 s (15 min) |
+| Maximum client-fund lock (§2.7) | `work_duration + 11 d` | `work_duration + 35 min` |
+
+- The devnet-demo profile exists so that review expiry, developer dispute and the
+  dispute fallback can be shown in real time. It must never be used where real
+  funds are at stake: ten minutes is not a meaningful review period.
+- Because the windows are immutable, choosing them is a deployment decision, not
+  a runtime one. Changing them later means deploying a new program instance.
+- Shortening `dispute_timeout` at deploy time reduces the maximum client-fund
+  lock by the same amount. Shortening `review_window` reduces it by twice that
+  amount while it remains at least `verification_grace`, because the review
+  window also sets the length of the developer's dispute window.
+- The program validates only that each window is positive and that
+  `fee_bps ≤ 10000`. It does not know which cluster it runs on; picking the right
+  profile is the deployer's responsibility.
+
+`client_lock.rs` runs the worst-case timeline under both profiles.
+
+---
+
+## 16. Test evidence
+
+| Suite | What it establishes |
+|---|---|
+| `lifecycle.rs` | Each transition of §2.3 with exact fund movements; the fee is charged on the principal only; stray deposits follow the principal. |
+| `authorization.rs` | Signer, mint, token-account and destination checks; key separation; stale attestations. |
+| `exclusivity.rs` | Double settlement on every settlement path, races, deadline boundaries, and the mutual-exclusion cases of §2.6. |
+| `client_lock.rs` | The worst-case client-fund lock equals the formula in §2.7 for three window profiles. |
+| `evidence.rs` | The hash test vectors of §5.3 and §10.3; an attestation for one hash cannot settle another; an arbitrary hash never pays by itself. |
+| `randomized.rs` | Random instructions, signers and clock advances; after every step escrow equals the amount or the task is terminal with escrow closed, payouts never exceed the amount, and at most one terminal outcome occurs. |
+| `scripts/mutation-check.sh` | Eight seeded defects, each of which the suite must catch. |
+
+The randomized suite always runs the fixed seed `0x7A5C2026` and the range
+`0..TASKRA_FUZZ_SEEDS` (default 48), each for `TASKRA_FUZZ_STEPS` steps (default
+60). Both are environment variables so CI can run a longer campaign.

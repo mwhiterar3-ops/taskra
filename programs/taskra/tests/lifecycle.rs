@@ -386,3 +386,82 @@ fn treasury_accumulates_fees_across_tasks() {
     }
     assert_eq!(env.token_balance(&env.treasury), 3 * FEE);
 }
+
+/// The fee is a fraction of the task amount (the principal), never of
+/// whatever happens to sit in escrow. A stray deposit goes to the same party
+/// as the principal: the developer on a payment, the client on a refund.
+#[test]
+fn the_fee_is_charged_on_the_principal_only_on_every_path() {
+    const STRAY: u64 = 1_000 * USDC;
+
+    // Every developer-paying path: approve, review expiry, authority, fallback.
+    for path in 0..4 {
+        let mut env = Env::new();
+        let t = if path < 2 {
+            env.under_review_task(AMOUNT)
+        } else {
+            env.client_disputed_task(AMOUNT)
+        };
+        env.create_token_account_at(t.escrow, t.task, AMOUNT + STRAY);
+        match path {
+            0 => ok(env.approve(&t)),
+            1 => {
+                env.set_time(env.task(&t).review_deadline + 1);
+                ok(env.expire_review(&t));
+            }
+            2 => ok(env.resolve(&t, DisputeResolution::PayDeveloper)),
+            _ => {
+                env.set_time(env.task(&t).dispute_deadline + 1);
+                ok(env.expire_dispute(&t));
+            }
+        }
+        let balances = env.balances(&t);
+        assert_eq!(
+            balances.treasury, FEE,
+            "path {path}: fee must ignore the stray deposit"
+        );
+        assert_eq!(balances.developer, AMOUNT - FEE + STRAY, "path {path}");
+        assert_eq!(balances.client, 0, "path {path}");
+        assert!(!env.exists(&t.escrow), "path {path}");
+    }
+
+    // Every refunding path: missed deadline, never verified, authority, fallback.
+    for path in 0..4 {
+        let mut env = Env::new();
+        let t = match path {
+            0 => env.accepted_task(AMOUNT),
+            1 => env.submitted_task(AMOUNT),
+            2 => env.client_disputed_task(AMOUNT),
+            _ => env.developer_disputed_task(AMOUNT),
+        };
+        env.create_token_account_at(t.escrow, t.task, AMOUNT + STRAY);
+        match path {
+            0 => {
+                env.set_time(env.task(&t).work_deadline + 1);
+                ok(env.refund_expired(&t));
+            }
+            1 => {
+                env.set_time(env.task(&t).refund_open_at + 1);
+                ok(env.refund_expired(&t));
+            }
+            2 => ok(env.resolve(&t, DisputeResolution::RefundClient)),
+            _ => {
+                env.set_time(env.task(&t).dispute_deadline + 1);
+                ok(env.expire_dispute(&t));
+            }
+        }
+        let balances = env.balances(&t);
+        assert_eq!(balances.client, AMOUNT + STRAY, "path {path}");
+        assert_eq!(balances.treasury, 0, "path {path}: refunds carry no fee");
+        assert_eq!(balances.developer, 0, "path {path}");
+        assert!(!env.exists(&t.escrow), "path {path}");
+    }
+
+    // A zero-fee task with a stray deposit: still no fee.
+    let mut env = Env::new();
+    let t = env.under_review_task(39);
+    env.create_token_account_at(t.escrow, t.task, 39 + STRAY);
+    ok(env.approve(&t));
+    assert_eq!(env.balances(&t).treasury, 0);
+    assert_eq!(env.balances(&t).developer, 39 + STRAY);
+}
