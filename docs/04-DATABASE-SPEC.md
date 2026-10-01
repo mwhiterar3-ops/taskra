@@ -19,7 +19,7 @@ Minimum logical entities:
 - onchain_transactions
 
 `reliability_rewards` was removed: on-chain reliability rewards are deferred from
-the MVP (`13-DECISIONS.md` D5). The Reliable Contributor milestone is an off-chain
+the MVP (`13-DECISIONS.md` D15). The Reliable Contributor milestone is an off-chain
 aggregate derived from `reputation_snapshots`.
 
 Exact schema, keys, indexes, constraints and relations must be written before implementation.

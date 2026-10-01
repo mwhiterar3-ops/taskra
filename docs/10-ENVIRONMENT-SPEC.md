@@ -69,10 +69,12 @@ a `SECRET`.
 | `NEXT_PUBLIC_USDC_MINT` | PUBLIC | USDC mint for the target network. |
 | `NEXT_PUBLIC_API_URL` | PUBLIC | Base URL of the Taskra API. |
 
-### Not present
+### Not present yet
 
-No privileged backend signing key (such as an attester key) exists. One may be
-added only after approval in `docs/13-DECISIONS.md` §7.
+The attester keypair approved in `docs/13-DECISIONS.md` §7.4 is the only
+privileged backend signing key Taskra will ever have. It does not exist yet: its
+`SECRET` variable is added in Phase 4 together with the attestation service. It
+must be a devnet/test key during development.
 
 ## Validation
 
@@ -93,7 +95,7 @@ A process validates only the variables it consumes. In Phase 0 the API consumes
 
 ## Toolchain versions
 
-Never use "latest". The rationale for each pin is in `docs/13-DECISIONS.md` §13.
+Never use "latest". The rationale for each pin is in `docs/13-DECISIONS.md` §12.
 
 | Tool | Version | Pinned in |
 |---|---|---|

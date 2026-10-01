@@ -4,23 +4,17 @@ Taskra is a Solana-native trust and settlement layer for verifiable technical
 work: a client escrows USDC, a developer proves completed work with GitHub
 evidence, and settlement builds the developer's reputation.
 
-## Status: Phase 0 (foundation)
-
-The repository contains tooling and scaffolding only. There is no escrow logic,
-no wallet authentication, no GitHub verification, no database schema and no
-product UI.
+## Status: Phase 1 (Anchor program)
 
 | Area | State |
 |---|---|
-| pnpm workspace, strict TypeScript, ESLint, Prettier | Done, validated |
-| Typed environment loader with tests | Done, validated |
-| Web: minimal Next.js app (root page only) | Done, validated |
-| API: Node.js/TypeScript with `GET /health` | Done, validated |
-| Local PostgreSQL (docker-compose) and empty migration setup | Done, validated |
-| Anchor workspace; program with no instructions | Written, **not built** — blocked on toolchain approval |
-
-Phase 1 (the Anchor program) starts only after the open decisions in
-[docs/13-DECISIONS.md](docs/13-DECISIONS.md) §7.6 and §16 are approved.
+| pnpm workspace, strict TypeScript, ESLint, Prettier | Done |
+| Typed environment loader with tests | Done |
+| Web: minimal Next.js app (root page only) | Done |
+| API: Node.js/TypeScript with `GET /health` | Done |
+| Local PostgreSQL (docker-compose) and empty migration setup | Done |
+| Anchor program: escrow, attestation, settlement, disputes | In progress (Phase 1) |
+| SDK, database schema, API endpoints, GitHub verification, product UI | Not started |
 
 ## Specification pack
 
@@ -63,7 +57,7 @@ docs/             Specification pack
 
 ## Toolchain versions
 
-Pinned; never "latest". Rationale in [docs/13-DECISIONS.md](docs/13-DECISIONS.md) §13.
+Pinned; never "latest". Rationale in [docs/13-DECISIONS.md](docs/13-DECISIONS.md) §12.
 
 | Tool | Version |
 |---|---|
@@ -76,8 +70,7 @@ Pinned; never "latest". Rationale in [docs/13-DECISIONS.md](docs/13-DECISIONS.md
 | PostgreSQL | 17.11 (Docker image `postgres:17.11-alpine3.24`) |
 
 The Solana/Anchor toolchain runs in Ubuntu on WSL, and the repository must live
-in the WSL filesystem at `~/taskra`, not under `/mnt/c`. The commands that set
-this up are listed in docs/13-DECISIONS.md §13.1 and have not been run yet.
+in the WSL filesystem at `~/taskra`, not under `/mnt/c`.
 
 ## Setup
 

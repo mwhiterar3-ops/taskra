@@ -4,26 +4,33 @@ The critical economic loop must be tested.
 
 ## Anchor tests
 
-Every transition in `13-DECISIONS.md` §2.2 must have a test. Test:
+Every transition in `13-DECISIONS.md` §2.3 must have a test. Tests use a local
+test mint and clock warping. Test:
+
 - create task (atomic create + fund)
 - cancel before acceptance
 - accept task
-- submit work
-- resubmit work
+- submit work and resubmit work
+- attestation, unauthorized attester, stale attestation after resubmission
 - approve
 - settlement, including the exact fee and developer amounts
+- zero-fee settlement
 - review expiry
 - rejection
+- developer dispute
 - dispute resolution: refund and payment
-- dispute timeout fallback
-- missed work deadline refund
+- dispute timeout fallback, both branches
+- missed work deadline refund and unverified-submission refund
 - invalid state transitions
 - unauthorized actions
-- double settlement
+- double settlement attempts across every settlement path
 - wrong developer
 - wrong client
-- wrong mint and wrong destination token account
-- deadline violations
+- wrong mint and wrong token account
+- authority attempting a third-party destination
+- deadline boundaries
+- every mutual-exclusion case in `13-DECISIONS.md` §2.6
+- key rotation
 
 Reliability rewards are deferred from the MVP, so there is no reward-cap test.
 

@@ -155,9 +155,10 @@ OPEN ───────── client cancels ──────────�
   ↓  developer accepts
 ACCEPTED ───── work deadline missed ────────→ REFUNDED  (full refund)
   ↓  developer submits evidence
-SUBMITTED
-  ↓  evidence verified
-UNDER_REVIEW                (only if the attester option is approved)
+SUBMITTED ──── never verified, developer escalates ──→ DISPUTED
+  │       └─── never verified, no escalation ───────→ REFUNDED (full refund)
+  ↓  evidence verified (on-chain attestation)
+UNDER_REVIEW
   │
   ├── client approves ──────────────────────→ SETTLED
   ├── review window expires ────────────────→ SETTLED
@@ -842,27 +843,30 @@ Do not put entire GitHub content or large task descriptions onchain.
 
 The MVP should use **one primary Task/Escrow program**.
 
-Conceptually (amended; the instruction set is defined in `13-DECISIONS.md` §3.9):
+Conceptually (amended; the instruction set is defined in `13-DECISIONS.md` §3.7):
 
 ```text
-create_task()      creates and funds atomically
+create_and_fund_task()   creates and funds atomically
       ↓
 accept_task()
       ↓
 submit_work()
       ↓
-approve_task()     releases payment in the same instruction
+record_attestation()     the platform attester records verification
+      ↓
+approve_task()           releases payment in the same instruction
 ```
 
 Additional state transitions:
 
 ```text
 expire_review()
-reject_task()      moves directly to DISPUTED
+reject_task()            moves directly to DISPUTED
+open_developer_dispute()
 resolve_dispute()
 expire_dispute()
 cancel_task()
-refund_task()
+refund_expired()
 ```
 
 The exact instruction set should be kept minimal.
