@@ -154,6 +154,19 @@ repository with a test; "Accepted" means a known residual risk.
 | Detail | If a developer resubmits after an attestation landed but before the service saw it finalized, the earlier operation ends as `FAILED: The submission is no longer the current one on-chain`, although its transaction did execute. The on-chain result is correct (the attestation was voided by the program) and the new submission is verified separately. |
 | Evidence | Observed in e2e F. |
 
+### F-13 — Server secrets were cached in the web app's build directory
+
+| | |
+|---|---|
+| Severity | Medium |
+| Status | **Fixed** |
+| Component | `apps/web/next.config.ts` |
+| Scenario | The web build loaded the whole root `.env` into its process. The build tool snapshots its environment into `.next/cache`, so `ATTESTER_SECRET_KEY` (and any other server variable present) was written to disk inside the web app's build directory. |
+| Impact | Nothing reached browsers: the key was never in `.next/static` or the server output, and `.next` is git-ignored. But a deployment that copies `.next` whole to the web host would have carried the signing key there. |
+| Remediation | The web configuration now takes only `NEXT_PUBLIC_*` from the root `.env` and deletes the server secrets from its own environment before building. |
+| Evidence | Live-stack smoke test: with the key exported in the build shell and a clean cache, no file under `.next` contains the key or the database URL, and the browser bundle still carries the public program id and mint. This check is a manual script, not part of `pnpm test`. |
+| Residual | A secret under a name not on the scrub list would still be cached. Build the web app in an environment that holds only its `NEXT_PUBLIC_*` variables. |
+
 ## 3. Review by area
 
 | Area | Conclusion | Evidence |
