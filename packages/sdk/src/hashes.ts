@@ -97,3 +97,31 @@ export function termsHash(input: TermsHashInput): Uint8Array {
     requireU64(input.amount, 'amount').toString(),
   ]);
 }
+
+/**
+ * Whether off-chain metadata describes an on-chain task: the hash recomputed
+ * from the metadata equals the task's `terms_hash`, and the hashed amount and
+ * duration are the ones the task records. Metadata that fails this must be
+ * shown as unverified and never used for verification (docs/13-DECISIONS.md §5.3).
+ */
+export function termsMatchTask(
+  metadata: TermsHashInput,
+  task: {
+    readonly termsHash: Uint8Array;
+    readonly amount: bigint;
+    readonly workDuration: bigint;
+  },
+): boolean {
+  let recomputed: Uint8Array;
+  try {
+    recomputed = termsHash(metadata);
+  } catch {
+    return false;
+  }
+  return (
+    recomputed.length === task.termsHash.length &&
+    recomputed.every((byte, index) => byte === task.termsHash[index]) &&
+    metadata.amount === task.amount &&
+    metadata.workDuration === task.workDuration
+  );
+}

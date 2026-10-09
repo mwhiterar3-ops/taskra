@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import { toHex } from './bytes.js';
 import { TaskraSdkError } from './errors.js';
-import { rejectionReasonHash } from './hashes.js';
+import { rejectionReasonHash, termsHash, termsMatchTask } from './hashes.js';
+
+describe('termsMatchTask', () => {
+  const metadata = {
+    repo: 'octo-org/parser',
+    acceptanceCriteria: 'Parses transaction signatures\nReturns structured output',
+    workDuration: 172_800n,
+    amount: 100_000_000n,
+  };
+  const task = { termsHash: termsHash(metadata), amount: 100_000_000n, workDuration: 172_800n };
+
+  it('accepts metadata that hashes to the on-chain terms', () => {
+    expect(termsMatchTask(metadata, task)).toBe(true);
+    expect(termsMatchTask({ ...metadata, repo: 'Octo-Org/Parser' }, task)).toBe(true);
+  });
+
+  it.each([
+    ['a different repository', { repo: 'octo-org/other' }],
+    ['edited acceptance criteria', { acceptanceCriteria: 'Anything goes' }],
+    ['a different amount', { amount: 1n }],
+    ['a different duration', { workDuration: 1n }],
+    ['an unusable repository', { repo: 'https://github.com/octo-org/parser' }],
+  ])('rejects %s', (_, patch) => {
+    expect(termsMatchTask({ ...metadata, ...patch }, task)).toBe(false);
+  });
+
+  it('rejects a task whose recorded amount differs from the hashed one', () => {
+    expect(termsMatchTask(metadata, { ...task, amount: 5n })).toBe(false);
+  });
+});
 
 describe('rejectionReasonHash', () => {
   it('is plain SHA-256 of the text (FIPS 180-2 vector "abc")', () => {

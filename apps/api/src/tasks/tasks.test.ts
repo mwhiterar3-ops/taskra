@@ -545,6 +545,15 @@ describe('metadata that no longer matches the chain', () => {
     expect(task.chain?.termsVerified).toBe(false);
   });
 
+  it('is flagged when stored metadata was edited but its stored hash was left alone', async () => {
+    const s = await scenario('OPEN');
+    expect((await getTask(s.task.id)).termsVerified).toBe(true);
+    await harness.admin.query(`UPDATE tasks SET repo = 'attacker/repo' WHERE id = $1`, [s.task.id]);
+    const task = await getTask(s.task.id);
+    expect(task.termsVerified).toBe(false);
+    expect(task.chain?.termsVerified).toBe(false);
+  });
+
   it('is flagged when the on-chain amount differs from the draft', async () => {
     const s = await scenario('DRAFT');
     harness.chain.setTask(s.address, { ...s.account, amount: 1n }, { finalized: true });

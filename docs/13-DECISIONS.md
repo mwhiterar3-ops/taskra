@@ -609,12 +609,13 @@ submission is rejected even if the same hash is submitted again.
 | Property | Definition |
 |---|---|
 | Permission | Exactly one instruction, `record_attestation`. Never a signer on any fund-moving instruction. |
-| Storage | A dedicated keypair held as a `SECRET` in the API host's secret store. Never in the repository, the database, logs or the frontend. Holds only enough SOL for fees. Devnet/test only during development. |
+| Storage | A dedicated keypair held as a `SECRET` (`ATTESTER_SECRET_KEY`) in the attestation service's own secret store, separate from the API's (`14-API-CONTRACT.md` §6). Never in the repository, the database, logs, the API process or the frontend. Holds only enough SOL for fees. Devnet/test only during development. |
 | Separation | Distinct from the platform authority and the treasury wallet; enforced on-chain. |
 | Rotation | Only the platform authority, through `rotate_keys`. The old key stops working immediately. Attestations already recorded stay valid. |
 
-No attester key exists in the repository or any environment yet; the API-side
-attestation service is built in Phase 4.
+No attester key exists in the repository. The attestation service is
+`apps/attester`; its security model is in `06-GITHUB-VERIFICATION-SPEC.md`
+("Attestation service security").
 
 ### 7.5 Threat model
 
@@ -806,7 +807,19 @@ Reversible implementation details, recorded for transparency.
 | `GITHUB_WEBHOOK_SECRET` | Removed; the MVP uses no webhooks. |
 | Migration tool | `node-pg-migrate` with plain SQL. |
 | API framework | Fastify. |
-| Worker process | None. Expiry instructions are permissionless and the API reconciles chain state on request. |
+| Worker process | No keeper. Expiry instructions are permissionless and the API reconciles chain state on request. The one background process is the attestation service below. |
+| Attestation service | A separate process, `apps/attester`, containing both the GitHub verifier and the attester signer, with no network listener. The API hands it work only by inserting a row into a database queue; the service re-derives every fact before signing. This is the "separate attestation service" required by `14-API-CONTRACT.md` §6. |
+| Database access | `pg` with parameterized SQL and `node-pg-migrate`; no ORM. A later instruction to use Prisma was not followed because this row and the Phase 0 tooling already fixed the choice; changing it is possible but buys nothing for this schema. |
+| Database isolation | Two roles, `taskra_api` and `taskra_attester`, with table privileges (`04-DATABASE-SPEC.md` §6). No row-level security: the system is single-tenant. |
+| Sessions | Opaque random token in an `HttpOnly; SameSite=Strict` cookie; only its SHA-256 is stored; 24 h absolute lifetime; no renewal. CSRF is additionally blocked by an `Origin` check on every non-GET request. The web app and the API must share a site. |
+| API versioning | Endpoints live under `/api/v1`; the shapes are those of `05-API-SPEC.md`. |
+| Transactions without a dedicated endpoint | Cancel, refund, dispute and expiry transactions are reported to `POST /api/v1/tasks/:id/transactions`, which accepts any Taskra instruction for that task. |
+| Rejection reason hash | Plain SHA-256 of the reason text after NFC normalization and trimming (`rejectionReasonHash` in the SDK), as §2.5 T10 specifies. |
+| Reputation storage | SQL views over finalized `settlements` rather than snapshot rows, so an aggregate cannot drift from its source. |
+| Reliable Contributor | 3 settled tasks from 3 distinct clients, computed off-chain. The product specification's "minimum task value" has no number, so it is not applied. |
+| Reliability Score | Not reduced to one number: the specification gives the terms of the formula but no weights. The API and UI show the components (settled, distinct clients, disputed, refunded). |
+| CI status | Not fetched or displayed. It was optional and informational; omitting it avoids implying it matters. |
+| Test database | An ephemeral PostgreSQL 17.10 from `embedded-postgres` (test-only dependency), or the server named by `TASKRA_TEST_DATABASE_URL`. docker-compose remains the development database. |
 
 ---
 

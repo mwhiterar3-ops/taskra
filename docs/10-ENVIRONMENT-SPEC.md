@@ -69,12 +69,31 @@ a `SECRET`.
 | `NEXT_PUBLIC_USDC_MINT` | PUBLIC | USDC mint for the target network. |
 | `NEXT_PUBLIC_API_URL` | PUBLIC | Base URL of the Taskra API. |
 
-### Not present yet
+### Attestation service
 
-The attester keypair approved in `docs/13-DECISIONS.md` §7.4 is the only
-privileged backend signing key Taskra will ever have. It does not exist yet: its
-`SECRET` variable is added in Phase 4 together with the attestation service. It
-must be a devnet/test key during development.
+| Variable | Label | Description |
+|---|---|---|
+| `ATTESTER_SECRET_KEY` | SECRET | The attester keypair, as the JSON array of 64 bytes that `solana-keygen` writes. |
+
+This is the attester keypair approved in `docs/13-DECISIONS.md` §7.4, the only
+privileged backend signing key Taskra has. It is read **only** by
+`apps/attester`; the API's configuration does not load it even when it is
+present in the environment, and it must not be given to the API host or the web
+app. It must be a devnet/test key during development. Its public key must equal
+`platform.attester`, or the service refuses to start.
+
+In a deployment the attestation service has its own environment containing
+`NODE_ENV`, `SOLANA_NETWORK`, `SOLANA_RPC_URL`, `TASKRA_PROGRAM_ID`, `USDC_MINT`,
+its own `DATABASE_URL` (a login that is a member of `taskra_attester` only),
+`ATTESTER_SECRET_KEY`, and optionally the GitHub client id and secret.
+
+### Tests
+
+| Variable | Label | Description |
+|---|---|---|
+| `TASKRA_TEST_DATABASE_URL` | SECRET | Optional. Admin connection string of a PostgreSQL server for the test suites to create throwaway databases on. Unset, the suites start an ephemeral PostgreSQL themselves. Never point it at a server holding real data. |
+
+It is read only by the test harness and is not part of `.env.example`.
 
 ## Validation
 
@@ -90,8 +109,13 @@ The contract is enforced in code by `packages/shared/src/env`:
   variable is `NEXT_PUBLIC_*`, that `.env.example` labels every variable, and
   that no `SECRET` has a value in `.env.example`.
 
-A process validates only the variables it consumes. In Phase 0 the API consumes
-`NODE_ENV`, `API_HOST` and `API_PORT`; the web app consumes none.
+A process validates only the variables it consumes:
+
+| Process | Variables |
+|---|---|
+| API (`apps/api`) | Runtime, Blockchain, `DATABASE_URL`; the GitHub pair is optional (without it, linking a GitHub identity answers `503 GITHUB_NOT_CONFIGURED`) |
+| Attestation service (`apps/attester`) | `NODE_ENV`, Blockchain, `DATABASE_URL`, `ATTESTER_SECRET_KEY`; the GitHub pair is optional |
+| Web (`apps/web`) | The `NEXT_PUBLIC_*` variables |
 
 ## Toolchain versions
 

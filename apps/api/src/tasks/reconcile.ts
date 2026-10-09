@@ -16,7 +16,7 @@ import {
   type TaskAccount,
   type TaskraCommitment,
   type TaskState,
-  toHex,
+  termsMatchTask,
   uuidFromTaskId,
 } from '@taskra/sdk';
 import { type Queryable, withTransaction } from '@taskra/shared/db';
@@ -59,12 +59,20 @@ export type TransactionStatus = 'CONFIRMED' | 'FINALIZED' | 'FAILED' | 'DROPPED'
 const DROPPED_AFTER_MS = 3 * 60 * 1000;
 const SETTLEMENT_SEARCH_LIMIT = 25;
 
-/** Whether the on-chain task is the one this metadata describes. */
+/**
+ * Whether the on-chain task is the one this metadata describes. The hash is
+ * recomputed from the stored metadata; the stored `terms_hash` column is not
+ * trusted for this.
+ */
 export function termsMatch(row: TaskRow, account: TaskAccount): boolean {
-  return (
-    toHex(account.termsHash) === row.terms_hash &&
-    account.amount.toString() === row.amount &&
-    account.workDuration.toString() === row.work_duration
+  return termsMatchTask(
+    {
+      repo: row.repo,
+      acceptanceCriteria: row.acceptance_criteria,
+      workDuration: BigInt(row.work_duration),
+      amount: BigInt(row.amount),
+    },
+    account,
   );
 }
 
