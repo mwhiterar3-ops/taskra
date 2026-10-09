@@ -119,7 +119,11 @@ their `PUBLIC` / `SERVER_ONLY` / `SECRET` labels:
 | `pnpm e2e` | The whole system against a local validator: seven scenarios, about six minutes | Solana CLI |
 | `scripts/mutation-check.sh` | Eight seeded defects in the program; all must be caught | Clean tree |
 | `scripts/mutation-check-services.sh` | Sixteen seeded defects in the API, attester and web logic; all must be caught | Clean tree |
-| `scripts/test-deploy-guards.sh` | The devnet deploy script refuses unsafe configurations; dry run only | `anchor build` done once |
+| `scripts/test-deploy-guards.sh` | The devnet deploy script refuses unsafe configurations; dry run only | The owner's program keypair (git-ignored; not available in a fresh clone) |
+
+Everything in this table except the last row runs from a fresh clone: the
+local-validator scripts take the program address from the built IDL and need no
+keypair.
 
 The test database is an ephemeral PostgreSQL 17.10 from the `embedded-postgres`
 package. To use another server (for example the docker-compose one, 17.11), set

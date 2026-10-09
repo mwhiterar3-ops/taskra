@@ -34,10 +34,19 @@ echo "--- building the program and the packages"
 anchor build >"$WORK/build.log" 2>&1 || { tail -40 "$WORK/build.log"; exit 1; }
 pnpm build:packages >"$WORK/packages.log" 2>&1 || { tail -40 "$WORK/packages.log"; exit 1; }
 
-PROGRAM_ID="$(solana-keygen pubkey target/deploy/taskra-keypair.json)"
-IDL_ADDRESS="$(node -e 'console.log(require("./target/idl/taskra.json").address)')"
-if [ "$PROGRAM_ID" != "$IDL_ADDRESS" ]; then
-  echo "error: program keypair ($PROGRAM_ID) does not match the IDL address ($IDL_ADDRESS)" >&2
+# The program's address is the one declared in the source (declare_id!) and
+# carried by the freshly built IDL. A local validator loads the program at
+# whatever address it is given, so no program keypair is needed here: the
+# keypair is git-ignored, and a fresh clone only has a random one. Only a real
+# deployment needs the matching key (scripts/deploy-devnet.sh checks that).
+PROGRAM_ID="$(node -e 'console.log(require("./target/idl/taskra.json").address)')"
+DECLARED_ID="$(sed -n 's/^declare_id!("\(.*\)");$/\1/p' programs/taskra/src/lib.rs)"
+if [ -z "$PROGRAM_ID" ] || [ "$PROGRAM_ID" != "$DECLARED_ID" ]; then
+  echo "error: the built IDL address ($PROGRAM_ID) is not the address the program declares ($DECLARED_ID)" >&2
+  exit 1
+fi
+if ! grep -q "address: '$PROGRAM_ID'" packages/sdk/src/generated/idl.ts; then
+  echo "error: the SDK's generated IDL is for a different program address; run 'pnpm sdk:idl'" >&2
   exit 1
 fi
 

@@ -3,7 +3,11 @@
 # its dry run changes nothing. Nothing is deployed and no cluster is contacted:
 # the one case that reaches the network step points at a closed local port.
 #
-# Usage: scripts/test-deploy-guards.sh   (needs target/deploy/taskra-keypair.json)
+# Usage: scripts/test-deploy-guards.sh
+#
+# Needs the owner's program keypair (target/deploy/taskra-keypair.json, the one
+# whose address is declare_id!). It is git-ignored, so this check cannot run
+# from a fresh clone; it is a tool for whoever holds the deployment key.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
