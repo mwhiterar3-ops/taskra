@@ -185,7 +185,54 @@ repository with a test; "Accepted" means a known residual risk.
 `scripts/mutation-check-services.sh` introduces one defect at a time and
 requires a test to fail. Result of the last run:
 
-MUTATION_RESULTS_PLACEHOLDER
+| # | Seeded defect | Caught by |
+|---|---|---|
+| 1 | Login nonce can be used more than once | `auth.test.ts`: replayed nonce; concurrent use; wrong key spends the nonce |
+| 2 | Login signature is not verified | `auth.test.ts`: signature by a different key; altered message |
+| 3 | Expired sessions are accepted | `auth.test.ts`: sessions expire after their lifetime |
+| 4 | Writes from other origins are accepted | `auth.test.ts`: cross-origin writes refused |
+| 5 | Settlement recorded from a confirmed account | `tasks.test.ts`: nothing financial at confirmed |
+| 6 | A transaction for another task is accepted | `tasks.test.ts`: refuses a transaction for a different task |
+| 7 | Metadata always reported as matching the chain | `tasks.test.ts`: flagged as unverified (F-01) |
+| 8 | Evidence accepted from a non-developer | `tasks.test.ts`: only the on-chain developer |
+| 9 | A self-merged pull request is verified (R6) | `rules.test.ts`, `worker.test.ts` |
+| 10 | Evidence hash not compared with the chain (R9) | `rules.test.ts`: changed head; arbitrary hash |
+| 11 | A superseded submission is still verified (P2) | `rules.test.ts`: stale submission |
+| 12 | A GitHub error status is treated as an answer (R10) | `github.test.ts`: well-formed body with HTTP 500/503/403 |
+| 13 | Attestation marked final at confirmed | `worker.test.ts`: FINALIZED only with the chain |
+| 14 | Web reports a confirmed transaction as final | `transaction.test.ts`: polls until finalized |
+| 15 | A session for another wallet counts as signed in | `app-context.test.tsx` |
+| 16 | Developer may dispute before the window opens | `actions.test.ts`: the (D, R] window |
+
+**All 16 caught.** The first run of this check caught only 2, and that was the
+most useful result of the review: see F-11. Two defects (12 and 14) genuinely
+survived at first; tests were added for both.
+
+### F-11 — The test harness reported failing suites as passing
+
+| | |
+|---|---|
+| Severity | High (assurance, not runtime) |
+| Status | **Fixed** |
+| Component | `packages/shared/src/testing/postgres.ts` |
+| Scenario | The `embedded-postgres` launcher registers an exit hook that ends the process with code 0. Loaded in the test runner's main process, it made the API and attestation-service suites exit 0 even when tests failed. |
+| Impact | `pnpm test` and any CI built on it could not detect a regression in the two most security-relevant packages. No shipped behaviour was affected, and the runs recorded in this repository did pass (their logs show every test passing), but the exit status proved nothing. |
+| Remediation | The harness starts the PostgreSQL binaries itself and never imports the launcher. |
+| Evidence | `postgres.test.ts`: a child process that fails on purpose keeps its exit code; the mutation check now fails the suites for every seeded defect. |
+| Residual | None known. The mutation check should be re-run whenever the test infrastructure changes. |
+
+### F-12 — The attester key could sit in the API's environment
+
+| | |
+|---|---|
+| Severity | Medium |
+| Status | **Fixed** |
+| Component | `apps/api` configuration |
+| Scenario | One `.env` file serves every process in development, so `ATTESTER_SECRET_KEY` was present in the API process's environment (unused). Copying that arrangement to a server would put the signing key on the request-handling host. |
+| Impact | An API compromise would then also be an attester-key compromise. |
+| Remediation | In production the API refuses to start if the variable is present. Otherwise it deletes it from its own environment at startup. |
+| Evidence | `app.test.ts`: "refuses to start in production when the attester key is in its environment"; e2e G starts the API process without it. |
+| Residual | In development the key is still in the same file as the API's variables. |
 
 `scripts/mutation-check.sh` does the same for the program with eight defects
 (Phase 1).
