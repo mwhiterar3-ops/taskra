@@ -52,6 +52,8 @@ describe('runTransaction', () => {
       'finalized',
     ]);
     expect(final).toEqual({ phase: 'finalized', signature: rpc.sent[0] });
+    // It kept polling until the cluster itself said finalized.
+    expect(rpc.polls).toBe(5);
     // Reported once, at confirmation, with the signature that was actually sent.
     expect(reported).toEqual([rpc.sent[0]]);
   });
@@ -65,6 +67,8 @@ describe('runTransaction', () => {
     expect(confirmedIndex).toBeGreaterThan(-1);
     expect(finalizedIndex).toBeGreaterThan(confirmedIndex);
     expect(states.filter((state) => state.phase === 'confirmed')).toHaveLength(1);
+    // Three confirmed answers were not enough: it waited for the fourth, finalized one.
+    expect(rpc.polls).toBe(4);
   });
 
   it('reports a wallet rejection as rejected, and sends nothing', async () => {

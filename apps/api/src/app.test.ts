@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadApiConfig } from './config.js';
+import { discardForeignSecrets, loadApiConfig } from './config.js';
 import { createHarness, createWallet, type Harness, WEB_ORIGIN } from './testing/harness.js';
 
 let harness: Harness;
@@ -143,6 +143,24 @@ describe('API config', () => {
 
   it('refuses to start without a port', () => {
     expect(() => loadApiConfig({ ...env, API_PORT: undefined })).toThrow(/API_PORT: is required/);
+  });
+
+  it('refuses to start in production when the attester key is in its environment', () => {
+    const key = JSON.stringify(Array.from({ length: 64 }, () => 1));
+    expect(() =>
+      loadApiConfig({ ...env, NODE_ENV: 'production', ATTESTER_SECRET_KEY: key }),
+    ).toThrow(/ATTESTER_SECRET_KEY: must not be present in the API environment/);
+    expect(() => loadApiConfig({ ...env, NODE_ENV: 'production' })).not.toThrow();
+  });
+
+  it('removes the attester key from the process environment in development', () => {
+    const environment: Record<string, string | undefined> = {
+      ...env,
+      ATTESTER_SECRET_KEY: 'local-test-key',
+    };
+    discardForeignSecrets(environment);
+    expect('ATTESTER_SECRET_KEY' in environment).toBe(false);
+    expect(environment['DATABASE_URL']).toBe(env.DATABASE_URL);
   });
 
   it('never loads the attester key, even when it is present in the environment', () => {

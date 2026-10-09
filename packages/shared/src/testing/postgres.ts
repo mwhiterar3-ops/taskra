@@ -6,12 +6,14 @@
 // string (for example the docker-compose server) to use that server instead;
 // only uniquely named databases are created on it, and they are dropped again.
 
+import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import EmbeddedPostgres from 'embedded-postgres';
+import { basename, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runner } from 'node-pg-migrate';
 import pg from 'pg';
 
@@ -41,27 +43,97 @@ export async function startTestPostgres(): Promise<TestPostgres> {
     return { adminUrl: external, stop: () => Promise.resolve() };
   }
 
+  const binaries = await postgresBinaries();
   const databaseDir = await mkdtemp(join(tmpdir(), 'taskra-test-pg-'));
   const port = await freePort();
   const password = randomBytes(16).toString('hex');
-  const server = new EmbeddedPostgres({
-    databaseDir,
-    port,
-    user: 'postgres',
-    password,
-    persistent: false,
-    onLog: () => undefined,
-    onError: () => undefined,
-  });
-  await server.initialise();
-  await server.start();
+  const passwordFile = join(databaseDir, '..', `${basename(databaseDir)}.pwfile`);
+  await writeFile(passwordFile, `${password}\n`, { mode: 0o600 });
+  try {
+    await run(binaries.initdb, [
+      `--pgdata=${databaseDir}`,
+      '--auth=password',
+      '--username=postgres',
+      `--pwfile=${passwordFile}`,
+    ]);
+  } finally {
+    await rm(passwordFile, { force: true });
+  }
+
+  const server = spawn(
+    binaries.postgres,
+    ['-D', databaseDir, '-p', String(port), '-c', 'listen_addresses=127.0.0.1', '-k', databaseDir],
+    { stdio: 'ignore' },
+  );
+  // If this process dies without stopping the server, take the server with it.
+  // A plain synchronous kill: it never changes this process's exit code.
+  const killOnExit = () => server.kill('SIGKILL');
+  process.once('exit', killOnExit);
+
+  const adminUrl = `postgres://postgres:${password}@127.0.0.1:${String(port)}/postgres`;
+  await waitUntilReady(adminUrl, server);
   return {
-    adminUrl: `postgres://postgres:${password}@127.0.0.1:${String(port)}/postgres`,
+    adminUrl,
     stop: async () => {
-      await server.stop();
+      process.off('exit', killOnExit);
+      const exited = new Promise((resolve) => server.once('exit', resolve));
+      server.kill('SIGINT'); // fast shutdown
+      await exited;
       await rm(databaseDir, { recursive: true, force: true });
     },
   };
+}
+
+interface PostgresBinaries {
+  readonly postgres: string;
+  readonly initdb: string;
+}
+
+/**
+ * Paths of the PostgreSQL binaries shipped by the `embedded-postgres` package.
+ *
+ * Only the binaries are used. The package's own JavaScript launcher is never
+ * imported: it installs an exit hook that ends the process with code 0, which
+ * would make a failing test run look like a passing one.
+ */
+async function postgresBinaries(): Promise<PostgresBinaries> {
+  const fromShared = createRequire(import.meta.url);
+  const fromLauncher = createRequire(fromShared.resolve('embedded-postgres'));
+  const platform = process.platform === 'win32' ? 'windows' : process.platform;
+  const entry = fromLauncher.resolve(`@embedded-postgres/${platform}-${process.arch}`);
+  const binaries = (await import(pathToFileURL(entry).href)) as PostgresBinaries;
+  await Promise.all([chmod(binaries.postgres, 0o755), chmod(binaries.initdb, 0o755)]);
+  return binaries;
+}
+
+function run(command: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let errors = '';
+    child.stderr.on('data', (chunk: Buffer) => (errors += chunk.toString()));
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${basename(command)} exited with code ${String(code)}: ${errors}`));
+    });
+  });
+}
+
+async function waitUntilReady(adminUrl: string, server: ChildProcess): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    if (server.exitCode !== null) throw new Error('the test PostgreSQL exited during startup');
+    const client = new pg.Client({ connectionString: adminUrl });
+    try {
+      await client.connect();
+      await client.end();
+      return;
+    } catch (error) {
+      await client.end().catch(() => undefined);
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }
 
 function withDatabase(url: string, database: string): string {
