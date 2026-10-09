@@ -23,7 +23,8 @@
     "anchor:fmt": "cargo fmt --all --check",
     "anchor:lint": "cargo clippy --workspace --all-targets -- -D warnings",
     "sdk:idl": "pnpm --filter @taskra/sdk idl:sync",
-    "sdk:validator-loop": "bash scripts/validator-loop.sh"
+    "sdk:validator-loop": "bash scripts/validator-loop.sh",
+    "e2e": "bash scripts/e2e.sh"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

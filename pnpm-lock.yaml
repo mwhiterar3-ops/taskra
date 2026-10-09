@@ -208,6 +208,31 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
 
+  apps/e2e:
+    dependencies:
+      '@solana/spl-token':
+        specifier: 0.4.15
+        version: 0.4.15(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@6.0.3))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)
+      '@solana/web3.js':
+        specifier: 1.99.0
+        version: 1.99.0(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)
+      '@taskra/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@taskra/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      bs58:
+        specifier: 6.0.0
+        version: 6.0.0
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+
   apps/web:
     dependencies:
       '@solana/web3.js':

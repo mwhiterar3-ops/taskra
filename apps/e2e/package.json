@@ -1,0 +1,21 @@
+{
+  "name": "@taskra/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "start": "node --import tsx src/main.ts"
+  },
+  "dependencies": {
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "1.99.0",
+    "@taskra/sdk": "workspace:*",
+    "@taskra/shared": "workspace:*",
+    "bs58": "6.0.0",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

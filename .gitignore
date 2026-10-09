@@ -13,6 +13,7 @@ next-env.d.ts
 target/
 .anchor/
 test-ledger/
+/.localnet/
 
 # Environment files: only the example is ever committed
 .env
