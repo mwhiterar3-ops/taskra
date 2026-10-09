@@ -108,6 +108,17 @@ describe('GitHub client', () => {
     });
   });
 
+  it.each([500, 503, 403])(
+    'does not accept a well-formed pull request delivered with HTTP %i',
+    async (status) => {
+      // The status decides, not the body: an error page that happens to parse
+      // must never be read as GitHub's answer.
+      const { fetch } = fakeFetch(() => json(PULL, status));
+      const result = await createGithubClient({ fetch }).getPullRequest('octo-org/parser', 42n);
+      expect(result.kind).toBe('unavailable');
+    },
+  );
+
   it('reports a network failure as unavailable', async () => {
     const fetchImpl = (() => Promise.reject(new TypeError('fetch failed'))) as typeof fetch;
     const result = await createGithubClient({ fetch: fetchImpl }).getRepository('octo-org/parser');
