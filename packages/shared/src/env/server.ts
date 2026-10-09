@@ -20,6 +20,11 @@ export const serverEnvSchema = z.object({
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   GITHUB_CLIENT_ID: z.string().min(1),
   GITHUB_CLIENT_SECRET: z.string().min(1),
+  // Read by the attestation service only. A Solana keypair as the JSON array of
+  // 64 bytes that `solana-keygen` writes. The API never loads this variable.
+  ATTESTER_SECRET_KEY: z
+    .string()
+    .regex(/^\[\s*\d{1,3}(\s*,\s*\d{1,3}){63}\s*\]$/, 'must be a JSON array of 64 bytes'),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

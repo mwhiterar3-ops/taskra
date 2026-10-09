@@ -48,6 +48,18 @@ export function normalizeAcceptanceCriteria(text: string): string {
   return text.normalize('NFC').trim();
 }
 
+/**
+ * The `reason_hash` argument of `reject_task`: plain SHA-256 of the reason
+ * text (docs/13-DECISIONS.md §2.5, T10), normalized like acceptance criteria so
+ * the browser and the API hash the same bytes.
+ */
+export function rejectionReasonHash(reason: string): Uint8Array {
+  if (typeof reason !== 'string') throw invalidArgument('reason must be a string');
+  const normalized = reason.normalize('NFC').trim();
+  if (normalized === '') throw invalidArgument('reason must not be empty');
+  return sha256(encoder.encode(normalized));
+}
+
 export interface EvidenceHashInput {
   readonly repo: string;
   readonly prNumber: bigint;

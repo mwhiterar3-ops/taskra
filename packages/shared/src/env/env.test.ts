@@ -28,6 +28,8 @@ const validServer = {
   DATABASE_URL: 'postgres://taskra:fixture-password@localhost:5432/taskra',
   GITHUB_CLIENT_ID: 'fixture-client-id',
   GITHUB_CLIENT_SECRET: 'fixture-client-secret',
+  // Shape only: 64 identical bytes are not a usable keypair.
+  ATTESTER_SECRET_KEY: JSON.stringify(Array.from({ length: 64 }, () => 7)),
 };
 
 function captureError(run: () => unknown): EnvValidationError {
@@ -90,6 +92,8 @@ describe('invalid values', () => {
     ['TASKRA_PROGRAM_ID', 'abc'],
     ['USDC_MINT', `${TOKEN_PROGRAM}1`],
     ['DATABASE_URL', 'https://localhost:5432/taskra'],
+    ['ATTESTER_SECRET_KEY', '[1,2,3]'],
+    ['ATTESTER_SECRET_KEY', 'not-a-keypair'],
   ])('rejects server %s=%s', (key, value) => {
     const error = captureError(() => loadServerEnv({ ...validServer, [key]: value }));
     expect(error.issues.map((issue) => issue.variable)).toEqual([key]);

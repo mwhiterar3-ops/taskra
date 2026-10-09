@@ -13,9 +13,19 @@
     "db:migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql"
   },
   "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/cors": "11.3.0",
+    "@fastify/rate-limit": "11.2.0",
+    "@solana/web3.js": "1.99.0",
+    "@taskra/sdk": "workspace:*",
     "@taskra/shared": "workspace:*",
+    "bs58": "6.0.0",
     "fastify": "5.12.5",
     "node-pg-migrate": "9.0.0",
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
   }
 }

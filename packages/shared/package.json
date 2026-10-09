@@ -11,6 +11,14 @@
     "./env/server": {
       "types": "./dist/env/server.d.ts",
       "default": "./dist/env/server.js"
+    },
+    "./db": {
+      "types": "./dist/db.d.ts",
+      "default": "./dist/db.js"
+    },
+    "./testing/postgres": {
+      "types": "./dist/testing/postgres.d.ts",
+      "default": "./dist/testing/postgres.js"
     }
   },
   "scripts": {
@@ -20,6 +28,12 @@
   },
   "dependencies": {
     "bs58": "6.0.0",
+    "embedded-postgres": "17.10.0-beta.17",
+    "node-pg-migrate": "9.0.0",
+    "pg": "8.23.1",
     "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
   }
 }
