@@ -3,7 +3,7 @@
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Keypair, PublicKey } from '@solana/web3.js';
-import { createTaskraConfig, type TaskAccount, toHex } from '@taskra/sdk';
+import { createTaskraConfig, type TaskAccount, taskIdFromUuid, toHex } from '@taskra/sdk';
 import { createPool } from '@taskra/shared/db';
 import { type TestDatabase, testDatabase } from '@taskra/shared/testing/postgres';
 import pg from 'pg';
@@ -17,6 +17,7 @@ import {
   DEVELOPER,
   DEVELOPER_GITHUB_ID,
   HEAD_SHA,
+  headCommit,
   key,
   MERGE_SHA,
   mergedPullRequest,
@@ -105,7 +106,8 @@ async function seed(
   // A distinct, well-formed address per task.
   const taskAddress = new PublicKey(randomBytes(32));
   const unique = taskAddress.toBase58();
-  const account = submittedTask(options.account);
+  // As on-chain: the account carries the id its record is stored under.
+  const account = submittedTask({ taskId: taskIdFromUuid(taskId), ...options.account });
   await owner.query(
     `INSERT INTO tasks (id, client_wallet, task_address, title, description, repo,
             acceptance_criteria, work_duration, amount, terms_hash)
@@ -122,6 +124,8 @@ async function seed(
     ],
   );
   chain.setTask(taskAddress, account, { finalized: true });
+  // By default the pull request's head commit declares this task and this developer.
+  github.commit = ok(headCommit(taskId));
   const submissionId = await register(taskId, account, options.nonce ?? account.submissionNonce);
   return { taskId, address: taskAddress, submissionId };
 }
@@ -218,7 +222,8 @@ describe('a valid submission', () => {
     });
     expect(result?.recomputed_evidence_hash).toBe(result?.onchain_evidence_hash);
     expect(result?.rules.every((rule) => rule.passed === true)).toBe(true);
-    expect(result?.github_meta.calls).toHaveLength(1);
+    expect(result?.github_meta.calls).toHaveLength(2);
+    expect(github.calls).toEqual([`pull ${REPO}#42`, `commit ${REPO}@${HEAD_SHA.slice(0, 7)}`]);
 
     expect(chain.sent).toHaveLength(1);
     expect(chain.sent[0]).toMatchObject({
@@ -302,6 +307,108 @@ describe('a submission that fails verification', () => {
     expect((await job(s.submissionId)).status).toBe('DONE');
   });
 
+  // M-01: an unrelated pull request that passes every pre-existing rule.
+  it('is REJECTED for an unrelated merged pull request, and nothing is signed', async () => {
+    const s = await seed();
+    github.commit = ok({ sha: HEAD_SHA, message: 'Fix a typo in the README' });
+    await worker.tick();
+
+    const [result] = await results(s.submissionId);
+    expect(result?.status).toBe('REJECTED');
+    const byRule = new Map(result?.rules.map((entry) => [entry.rule, entry.passed]));
+    for (const rule of ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9']) {
+      expect(byRule.get(rule), rule).toBe(true);
+    }
+    expect(byRule.get('R11')).toBe(false);
+    expect(byRule.get('R12')).toBe(false);
+    expect(await attestation(s.submissionId)).toBeUndefined();
+    expect(chain.sent).toEqual([]);
+    expect(chain.taskAt(s.address, 'confirmed')?.state).toBe('SUBMITTED');
+  });
+
+  it('lets one pull request satisfy only the task its commit names', async () => {
+    const first = await seed();
+    const second = await seed();
+    // Both tasks claim pull request #42; its head commit names the first.
+    github.commit = ok(headCommit(first.taskId));
+    await worker.tick();
+
+    expect((await results(first.submissionId)).map((row) => row.status)).toEqual(['VERIFIED']);
+    const [other] = await results(second.submissionId);
+    expect(other?.status).toBe('REJECTED');
+    expect(
+      other?.rules.filter((entry) => entry.passed === false).map((entry) => entry.rule),
+    ).toEqual(['R11']);
+    expect(chain.sent.map((sent) => sent.task)).toEqual([first.address.toBase58()]);
+  });
+
+  // The id R11 compares the commit with is the database record's. A record
+  // whose address is another task's account would let that task be attested
+  // with a pull request made for this one.
+  it('is REJECTED without contacting GitHub when the account at the stored address is another task', async () => {
+    const named = randomUUID();
+    const s = await seed({ account: { taskId: taskIdFromUuid(named) } });
+    // The commit names the record's id, so R11 alone would pass.
+    github.commit = ok(headCommit(s.taskId));
+    await worker.tick();
+
+    const [result] = await results(s.submissionId);
+    expect(result?.status).toBe('REJECTED');
+    expect(result?.rules).toEqual([expect.objectContaining({ rule: 'P1', passed: false })]);
+    expect(github.calls).toEqual([]);
+    expect(await attestation(s.submissionId)).toBeUndefined();
+    expect(chain.sent).toEqual([]);
+  });
+
+  // M-03: someone who can write the database links the author's GitHub account
+  // to their own wallet and claims the author's pull request.
+  it('is REJECTED when a rewritten GitHub link is the only thing tying the wallet to the pull request', async () => {
+    const attacker = key(66);
+    await owner.query(`INSERT INTO wallets (address) VALUES ($1) ON CONFLICT DO NOTHING`, [
+      attacker.toBase58(),
+    ]);
+    await owner.query(`UPDATE github_accounts SET wallet = $1 WHERE github_user_id = $2`, [
+      attacker.toBase58(),
+      DEVELOPER_GITHUB_ID,
+    ]);
+    try {
+      // The attacker's wallet is the task's on-chain developer.
+      const s = await seed({ account: { developer: attacker } });
+      // The real author's commit names the task, and their own wallet as payee.
+      github.commit = ok(headCommit(s.taskId, DEVELOPER.toBase58()));
+      await worker.tick();
+
+      const [result] = await results(s.submissionId);
+      expect(result?.status).toBe('REJECTED');
+      const failedRules = result?.rules.filter((entry) => entry.passed === false);
+      // R5 is satisfied by the forged link. R12 is what stops it.
+      expect(failedRules?.map((entry) => entry.rule)).toEqual(['R12']);
+      expect(chain.sent).toEqual([]);
+    } finally {
+      await owner.query(`UPDATE github_accounts SET wallet = $1 WHERE github_user_id = $2`, [
+        DEVELOPER.toBase58(),
+        DEVELOPER_GITHUB_ID,
+      ]);
+    }
+  });
+
+  it('is PENDING while the head commit cannot be read, then decided', async () => {
+    const s = await seed();
+    const good = github.commit;
+    github.commit = unavailable('GitHub answered 502');
+    await worker.tick();
+    expect((await results(s.submissionId)).map((row) => row.status)).toEqual(['PENDING']);
+    expect(chain.sent).toEqual([]);
+
+    github.commit = good;
+    clock += backoffSeconds(1) * 1000;
+    await worker.tick();
+    expect((await results(s.submissionId)).map((row) => row.status)).toEqual([
+      'PENDING',
+      'VERIFIED',
+    ]);
+  });
+
   it('is REJECTED when the repository was deleted', async () => {
     const s = await seed();
     github.pullRequest = notFound();
@@ -345,7 +452,11 @@ describe('stale and replayed submissions', () => {
     const s = await seed();
     chain.setTask(
       s.address,
-      submittedTask({ submissionNonce: 2n, evidenceHash: new Uint8Array(32).fill(0x22) }),
+      submittedTask({
+        taskId: taskIdFromUuid(s.taskId),
+        submissionNonce: 2n,
+        evidenceHash: new Uint8Array(32).fill(0x22),
+      }),
       { finalized: true },
     );
     await worker.tick();
@@ -358,7 +469,9 @@ describe('stale and replayed submissions', () => {
 
   it('waits, without a verdict, while the submission is confirmed but not finalized', async () => {
     const s = await seed({ account: { submissionNonce: 0n, state: 'ACCEPTED' }, nonce: 1n });
-    chain.setTask(s.address, submittedTask(), { finalized: false });
+    chain.setTask(s.address, submittedTask({ taskId: taskIdFromUuid(s.taskId) }), {
+      finalized: false,
+    });
     await worker.tick();
     expect((await results(s.submissionId)).map((row) => row.status)).toEqual(['PENDING']);
     expect(chain.sent).toEqual([]);
@@ -584,5 +697,111 @@ describe('attestation delivery', () => {
       last_error: 'Preflight failed with Unauthorized.',
     });
     expect(chain.taskAt(s.address, 'confirmed')?.state).toBe('SUBMITTED');
+  });
+});
+
+// N-2 of the second review: the developer corrects the registered pull-request
+// number while the service is asking GitHub about the old one.
+describe('a registration corrected while it is being verified', () => {
+  interface Records {
+    registered: string;
+    job: string;
+    verified: string[] | null;
+    attested: string[] | null;
+  }
+
+  async function records(submissionId: string): Promise<Records | undefined> {
+    const result = await owner.query<Records>(
+      `SELECT s.pr_number AS registered,
+              (SELECT status FROM verification_jobs j WHERE j.submission_id = s.id) AS job,
+              (SELECT array_agg(r.pr_number::text) FROM verification_results r
+                WHERE r.submission_id = s.id AND r.status = 'VERIFIED') AS verified,
+              (SELECT array_agg(r.pr_number::text) FROM attestations a
+                 JOIN verification_results r ON r.id = a.verification_result_id
+                WHERE a.submission_id = s.id) AS attested
+         FROM submissions s WHERE s.id = $1`,
+      [submissionId],
+    );
+    return result.rows[0];
+  }
+
+  it('records no VERIFIED result and signs nothing for the old number, then recovers', async () => {
+    const s = await seed();
+    const api = createPool(database.url, 'taskra_api');
+    try {
+      // The race found in the review: the correction commits after the service
+      // has read #42 and before it records its verdict.
+      const original = github.getPullRequest.bind(github);
+      let corrections = 0;
+      github.getPullRequest = async (repo, number) => {
+        if (corrections === 0) {
+          const update = await api.query(`UPDATE submissions SET pr_number = 4242 WHERE id = $1`, [
+            s.submissionId,
+          ]);
+          corrections += update.rowCount ?? 0;
+        }
+        return original(repo, number);
+      };
+
+      await worker.processNextJob();
+      expect(corrections).toBe(1);
+      // Everything about #42 checked out, and still nothing was recorded for it.
+      expect(await records(s.submissionId)).toEqual({
+        registered: '4242',
+        job: 'QUEUED',
+        verified: null,
+        attested: null,
+      });
+      await worker.driveAttestations();
+      expect(chain.sent).toHaveLength(0);
+
+      // The retry verifies what is registered now. The on-chain hash was made
+      // for #42, so #4242 is rejected on R9.
+      clock += 60_000;
+      await worker.processNextJob();
+      const rejected = (await results(s.submissionId)).at(-1);
+      expect(rejected?.status).toBe('REJECTED');
+      expect(rejected?.rules.find((rule) => rule.rule === 'R9')?.passed).toBe(false);
+      expect((await records(s.submissionId))?.verified).toBeNull();
+
+      // Not stuck on the wrong number: the developer corrects it back.
+      await api.query(`UPDATE submissions SET pr_number = $2 WHERE id = $1`, [
+        s.submissionId,
+        PR_NUMBER.toString(),
+      ]);
+      await api.query(
+        `UPDATE verification_jobs SET status = 'QUEUED', attempts = 0, run_after = $2
+          WHERE submission_id = $1`,
+        [s.submissionId, new Date(clock)],
+      );
+      await worker.tick();
+      expect(await records(s.submissionId)).toEqual({
+        registered: PR_NUMBER.toString(),
+        job: 'DONE',
+        verified: [PR_NUMBER.toString()],
+        attested: [PR_NUMBER.toString()],
+      });
+      expect(chain.sent).toHaveLength(1);
+    } finally {
+      await api.end();
+    }
+  });
+
+  it('refuses the correction once the VERIFIED result is recorded', async () => {
+    const s = await seed();
+    const api = createPool(database.url, 'taskra_api');
+    try {
+      await worker.processNextJob();
+      await expect(
+        api.query(`UPDATE submissions SET pr_number = 4242 WHERE id = $1`, [s.submissionId]),
+      ).rejects.toThrow(/cannot be pointed at another pull request/);
+      expect(await records(s.submissionId)).toMatchObject({
+        registered: PR_NUMBER.toString(),
+        verified: [PR_NUMBER.toString()],
+        attested: [PR_NUMBER.toString()],
+      });
+    } finally {
+      await api.end();
+    }
   });
 });

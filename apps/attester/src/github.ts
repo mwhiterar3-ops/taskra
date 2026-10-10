@@ -41,6 +41,12 @@ export interface PullRequest {
   readonly baseRepoCreatedAt: string;
 }
 
+/** A commit, as far as verification needs it. Its message is fixed by its SHA. */
+export interface Commit {
+  readonly sha: string;
+  readonly message: string;
+}
+
 export interface Repository {
   readonly fullName: string;
   readonly createdAt: string;
@@ -49,6 +55,7 @@ export interface Repository {
 export interface GithubClient {
   getPullRequest(repo: string, number: bigint): Promise<GithubOutcome<PullRequest>>;
   getRepository(repo: string): Promise<GithubOutcome<Repository>>;
+  getCommit(repo: string, sha: string): Promise<GithubOutcome<Commit>>;
 }
 
 const sha = z.string().regex(/^[0-9a-fA-F]{40}$/);
@@ -66,6 +73,11 @@ const pullRequestSchema = z.object({
   base: z.object({
     repo: z.object({ full_name: z.string().min(3).max(200), created_at: timestamp }),
   }),
+});
+
+const commitSchema = z.object({
+  sha,
+  commit: z.object({ message: z.string().max(100_000) }),
 });
 
 const repositorySchema = z.object({
@@ -159,6 +171,13 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
       get(`/repos/${repo}`, (body) => {
         const repository = repositorySchema.parse(body);
         return { fullName: repository.full_name, createdAt: repository.created_at };
+      }),
+    getCommit: (repo, requested) =>
+      get(`/repos/${repo}/commits/${requested}`, (body) => {
+        const commit = commitSchema.parse(body);
+        // An answer about a different commit is not an answer to this question.
+        if (commit.sha.toLowerCase() !== requested.toLowerCase()) throw new Error('wrong commit');
+        return { sha: commit.sha.toLowerCase(), message: commit.commit.message };
       }),
   };
 }

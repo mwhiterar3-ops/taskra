@@ -13,6 +13,8 @@ export interface FakePull {
   mergedAt: string | null;
   mergeCommitSha: string | null;
   headSha: string;
+  /** Message of the head commit. */
+  headMessage: string;
   author: FakeUser;
   mergedBy: FakeUser | null;
 }
@@ -85,6 +87,16 @@ export class FakeGithub {
         head: { sha: found.headSha },
         base: { repo: { full_name: pull[1], created_at: REPO_CREATED_AT } },
       });
+    }
+    const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(url.pathname);
+    if (commit?.[1] !== undefined && commit[2] !== undefined) {
+      const prefix = `${commit[1]}#`;
+      const owner = [...this.pulls].find(
+        ([key, pull]) => key.startsWith(prefix) && pull.headSha === commit[2],
+      );
+      return owner === undefined
+        ? Response.json({ message: 'Not Found' }, { status: 404 })
+        : Response.json({ sha: commit[2], commit: { message: owner[1].headMessage } });
     }
     const repository = /^\/repos\/([^/]+\/[^/]+)$/.exec(url.pathname);
     if (repository?.[1] !== undefined && this.repositories.has(repository[1])) {

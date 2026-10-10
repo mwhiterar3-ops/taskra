@@ -13,15 +13,19 @@ marked **not verified**.
 
 | Item | State |
 |---|---|
-| Branch / commit | `integration/phases-3-9` (see `git log`); `main` is the older Phase 2 commit |
+| Integration branch (the baseline) | `integration/phases-3-9` at `11458a0`. Everything in this pack that predates the security remediation describes this commit |
+| Published branch | `publish/colosseum` at `e82eec5`, which a configured remote (`origin`) also carries. Its files are identical to `11458a0`. **It contains none of the security remediation** |
+| Remediation branch (current work) | `security/remediation-1`, created from `11458a0`. The remediation described in `15-SECURITY-AUDIT.md` §7 exists there as **uncommitted changes in the working tree**: reviewed by its authors only, not committed, not pushed |
+| Branch intended for publication | **Not decided.** Publishing the remediation means committing it and choosing where it goes (§9, item 5). Until then the published code has the defects §7 of the audit describes |
+| `main` | The older Phase 2 commit (`a969203`) |
 | Works on | A **local Solana validator** only |
 | Devnet | **Not deployed.** The deploy script has been dry-run only |
 | Mainnet | Not deployed. Not intended |
 | Local stack over HTTP | Verified by script: validator + platform, API `/ready`, attestation service started, web app built with the local values and serving every route with status 200, CORS and the sign-in challenge correct for the web origin, no server secret anywhere in the web build |
 | Browser + wallet extension | **Not verified** by anyone. The pages are served and configured; connecting a wallet, signing and the on-page flows have never been clicked through |
 | Real GitHub OAuth and API | **Not verified**; automated runs use a fake GitHub |
-| Security | Self-reviewed (`15-SECURITY-AUDIT.md`). **No independent audit** |
-| Public repository | None yet; no Git remote is configured |
+| Security | Self-reviewed in five passes (`15-SECURITY-AUDIT.md`); each later pass found problems in the code or in the fixes of the one before. **No independent audit. Not for real funds** |
+| Public repository | A remote named `origin` is configured and carries `publish/colosseum`. Whether that repository is public, and who can read it, was not checked from this machine |
 
 Re-verify before submitting:
 
@@ -29,7 +33,7 @@ Re-verify before submitting:
 pnpm install --frozen-lockfile
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 pnpm anchor:test
-pnpm e2e                 # about six minutes; ends "END-TO-END RUN PASSED: 136 checks"
+pnpm e2e                 # about six minutes; ends "END-TO-END RUN PASSED: 189 checks"
 ```
 
 ## 2. What to read from the Colosseum dashboard
@@ -99,11 +103,12 @@ Taskra replaces the intermediary with a program and a rule set:
    the hash of a GitHub pull request on-chain. The hash commits to the
    repository, the pull-request number and its head commit.
 3. **Verification.** An attestation service fetches the pull request from
-   GitHub and checks nine rules: it targets the repository named in the task,
+   GitHub and checks eleven rules: it targets the repository named in the task,
    the repository pre-dates the task, it is merged, its author is the
    developer's linked GitHub identity, it was merged by someone else, it was
-   merged inside the work window, and the hash recomputed from GitHub's own
-   data equals the hash on-chain. If all hold, it records an attestation
+   merged inside the work window, its final commit names this task and the
+   wallet to be paid, and the hash recomputed from GitHub's own data equals the
+   hash on-chain. If all hold, it records an attestation
    on-chain. That attestation is the only thing its key can sign, and it can
    only start a review window — it cannot move funds.
 4. **Settlement.** The client approves, or does nothing and the review window
@@ -115,7 +120,8 @@ Taskra replaces the intermediary with a program and a rule set:
    that this wallet delivered this work for this amount.
 
 Every non-terminal state has an exit that opens at a fixed time without the
-other party's cooperation, so escrow cannot be locked forever.
+other party's cooperation (durations are capped at 365 days on-chain; someone
+must send the permissionless transaction).
 
 **What is honest to claim:** Taskra verifies evidence against predefined
 conditions. A merged pull request is evidence that a maintainer accepted the
@@ -128,7 +134,7 @@ work; it is not proof that the work is correct.
 | Capability | Where | Evidence |
 |---|---|---|
 | Atomic create-and-fund escrow in USDC, PDA-owned | `programs/taskra` | Program tests; e2e A |
-| 14-instruction lifecycle with deadline-driven exits; double settlement impossible | `programs/taskra`, `13-DECISIONS.md` §2 | 111 program tests incl. randomized sequences; 8/8 program mutations caught |
+| 14-instruction lifecycle with deadline-driven exits; double settlement impossible | `programs/taskra`, `13-DECISIONS.md` §2 | 119 program tests incl. randomized sequences; 10/10 program mutations caught |
 | Evidence hash bound to repository, PR number and head commit; resubmission voids an earlier attestation | program, SDK | Published hash vectors asserted in Rust and TypeScript; e2e F |
 | Attester that can sign exactly one instruction with no token accounts | `apps/attester/src/signer.ts` | `signer.test.ts`; fake cluster verifies the signature and instruction |
 | Rule-by-rule, append-only verification audit trail (head SHA and merge commit SHA) | `apps/attester`, PostgreSQL | `worker.test.ts`, `db.test.ts` |
@@ -136,7 +142,7 @@ work; it is not proof that the work is correct.
 | API that never signs and derives every effect from its own chain read; `confirmed` is pending, only `finalized` is recorded | `apps/api` | `tasks.test.ts`; e2e A–C |
 | Metadata bound to the chain by a terms hash recomputed by API, attester and browser | SDK `termsMatchTask` | e2e F (tampered metadata flagged) |
 | Web app that reads task state from Solana itself and shows success only at finality | `apps/web` | `transaction.test.ts`, `actions.test.ts` (logic only; UI **not verified** in a browser) |
-| Seeded-defect checks for program and services | `scripts/mutation-check*.sh` | 24/24 caught |
+| Seeded-defect checks for program and services | `scripts/mutation-check*.sh` | See `15-SECURITY-AUDIT.md` for the last recorded run |
 
 ### How this differs from a task tracker or a payment app
 
@@ -181,8 +187,9 @@ limit** once known: the bracketed sections can be cut first.
 >
 > **How (1:00).** When the developer submits, they record a hash of their pull
 > request on-chain. Our verifier fetches that pull request from GitHub and
-> checks nine rules — right repository, actually merged, merged by someone
-> other than the author, inside the deadline, and the hash matches. If they all
+> checks eleven rules — right repository, actually merged, merged by someone
+> other than the author, inside the deadline, the hash matches, and the pull
+> request's own final commit names this task and the wallet to pay. If they all
 > hold it writes one attestation on-chain. That starts a review window. The
 > client approves, or does nothing — and when the window ends, anyone can
 > settle the task. The developer is paid; Taskra takes two and a half percent.
@@ -191,15 +198,16 @@ limit** once known: the bracketed sections can be cut first.
 > key can sign exactly one instruction, and that instruction touches no token
 > account — steal it and you still cannot move a cent.] If the client rejects,
 > the task is disputed, and if nobody resolves it, a timeout pays verified work
-> and refunds unverified work. Every state has an exit with a deadline. Funds
-> cannot be stuck.
+> and refunds unverified work. Every state has an exit with a deadline, so a
+> task cannot simply hang on an absent party.
 >
 > **What is real (2:15).** This runs end to end today on a local validator:
 > the program, an SDK, an API that never holds a key, the verifier, and a web
-> app. One command runs seven scenarios and a hundred and thirty-six checks
-> against the real program. [We seed bugs into our own code — twenty-four of
-> them — and the tests catch every one.] It is not deployed to devnet yet and it
-> has not been audited; we would rather show you something true.
+> app. One command runs nine scenarios and a hundred and eighty-nine checks
+> against the real program. [We seed bugs into our own code and require the
+> tests to catch each one — and our second self-review still found real
+> problems, which we fixed and wrote up.] It is not deployed to devnet yet and
+> it has not been audited; we would rather show you something true.
 >
 > **Where it goes (2:40).** Each settled task is a permanent, verifiable work
 > record tied to a wallet. That is a reputation you carry with you, built from
@@ -220,12 +228,12 @@ Setup: a terminal in `~/taskra`, font large enough to read.
 | Time | Show | Say |
 |---|---|---|
 | 0:00 | `README.md` architecture diagram | The pieces: program, API that never signs, verifier with the only key, web app |
-| 0:20 | Run `pnpm e2e` (cut the build wait) | One command starts a real validator, the real program, a database, the API and the verifier, and drives seven scenarios with test wallets. GitHub is the only thing replaced by a stand-in |
+| 0:20 | Run `pnpm e2e` (cut the build wait) | One command starts a real validator, the real program, a database, the API and the verifier, and drives nine scenarios with test wallets. GitHub is the only thing replaced by a stand-in |
 | 0:40 | Scenario A lines: `task is OPEN`, `task is SUBMITTED`, `verification is VERIFIED`, `every rule passed`, `task is UNDER_REVIEW` | Funded, accepted, evidence recorded on-chain, verified, attested |
 | 1:10 | `fee observed on-chain: 2.50 USDC`, `developer observed on-chain: 97.50 USDC`, `developer balance grew by 97.50 USDC` | These amounts are read from the finalized transaction's token balances, not computed |
 | 1:30 | Scenario B: `expire_review is refused before the review deadline`, then `API found the outcome transaction by itself` | The client disappears; after the window anyone settles; the API finds it without being told |
 | 1:50 | Scenario E: `PENDING … while GitHub is unavailable`, `rejected because the pull request is not merged (R4)`, `client refunded in full` | An outage is never a verdict; unverified work ends in a refund |
-| 2:10 | Scenario G: `the attester refuses to start with a key the platform does not name` and the final `END-TO-END RUN PASSED: 136 checks` | The services as real processes |
+| 2:10 | Scenario G: `the attester refuses to start with a key the platform does not name` and the final `END-TO-END RUN PASSED: 189 checks` | The services as real processes |
 | 2:25 | `scripts/mutation-check-services.sh` result line, or `docs/15-SECURITY-AUDIT.md` §4 | We break our own code on purpose; all are caught. Self-reviewed, not audited |
 
 State on camera or in a caption: **local validator, test wallets, fake GitHub in
@@ -299,19 +307,20 @@ Before pushing, decide:
    code. Choose one (or decide deliberately not to).
 4. **Internal files.** `AGENTS.md` and `CLAUDE-BUILD-PROMPT.md` are tracked
    build instructions. Keep or remove as you prefer; they contain no secrets.
-5. **Which branch judges see.** All current work is on
-   `integration/phases-3-9`; `main` is the Phase 2 commit. Either make the
-   integration branch the default on GitHub, or merge it into `main` yourself.
+5. **Which branch judges see.** There are three candidates and they are not
+   the same code (§1): `publish/colosseum` (already on the remote, without the
+   remediation), `integration/phases-3-9` (the same files, the baseline), and
+   `security/remediation-1` (the baseline plus the remediation, once that is
+   committed). `main` is the Phase 2 commit. Decide which one is published and
+   whether it becomes the default branch; nothing here decides it for you.
 
-Suggested configuration (create it yourself; no URL is assumed here):
-
-- Empty repository, no auto-generated README, license or `.gitignore`.
-- Then, once you authorize it:
+A remote named `origin` already exists in this checkout. To publish a branch
+there, or to a repository you create (empty: no auto-generated README, license
+or `.gitignore`), once you have decided which branch and authorize it:
 
   ```bash
-  git remote add origin <the URL GitHub gives you>
-  git push -u origin integration/phases-3-9
-  git push origin main
+  git remote -v                                   # check where `origin` points first
+  git push -u origin <the branch you decided on>
   ```
 
 - After pushing: clone fresh into a new directory and run the commands in §1.
@@ -342,8 +351,18 @@ say otherwise. Never mainnet; never real funds.
 - The browser flow with a wallet extension has not been exercised by a person.
 - Real GitHub (OAuth and API) has not been exercised; tests use a stand-in.
 - Self-reviewed only. Open and accepted findings are in
-  `15-SECURITY-AUDIT.md`: a relayable sign-in message, trust in the off-chain
-  GitHub identity link, no Content-Security-Policy, proxy-dependent rate limits.
+  `15-SECURITY-AUDIT.md` §7.7: a relayable sign-in message, trust in the
+  off-chain GitHub identity link, no Content-Security-Policy, proxy-dependent
+  rate limits, an API database role that can insert settlement (reputation)
+  records, and settlements made through another program, which are never
+  recorded.
+- "Verified" means: a pull request in the task's repository, opened by the
+  account linked to the developer's wallet, merged by a different account
+  inside the work window, whose head commit names the task and the wallet. The
+  two lines in the commit are the developer's own declaration. It does not mean
+  the work is correct, that the developer wrote it, or that the merger is
+  independent of the developer.
+- Not for real funds.
 - `pnpm audit` reports 6 inherited transitive advisories (2 high, 4 moderate),
   unchanged since before the integration work; none is on a code path a running
   service uses.

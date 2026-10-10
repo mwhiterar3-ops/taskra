@@ -1,5 +1,5 @@
 use crate::{
-    constants::{ESCROW_SEED, PLATFORM_SEED, TASK_SEED},
+    constants::{ESCROW_SEED, MAX_WORK_DURATION, PLATFORM_SEED, TASK_SEED},
     error::TaskraError,
     state::{Outcome, Platform, Task, TaskState},
 };
@@ -48,7 +48,10 @@ pub fn create_and_fund_task(
     terms_hash: [u8; 32],
 ) -> Result<()> {
     require!(amount > 0, TaskraError::InvalidAmount);
-    require!(work_duration > 0, TaskraError::InvalidWorkDuration);
+    require!(
+        work_duration > 0 && work_duration <= MAX_WORK_DURATION,
+        TaskraError::InvalidWorkDuration
+    );
     require!(terms_hash != [0u8; 32], TaskraError::ZeroHash);
 
     token::transfer_checked(

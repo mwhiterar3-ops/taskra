@@ -1,4 +1,4 @@
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import {
   acceptTask,
   approveTask,
@@ -12,10 +12,11 @@ import {
   submitWork,
   type TaskAccount,
   taskIdFromUuid,
+  TOKEN_PROGRAM_ID,
 } from '@taskra/sdk';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { TokenBalanceChange } from '../chain/parse.js';
+import { type InnerInstruction, SettlementEvidenceError } from '../chain/parse.js';
 import {
   createDraft,
   createHarness,
@@ -25,10 +26,14 @@ import {
   type Harness,
   openAccount,
   randomSignature,
+  settlementInner,
   type TaskJson,
   type TestWallet,
+  tokenCloseAccount,
+  tokenTransferChecked,
   TREASURY,
 } from '../testing/harness.js';
+import { reconcileTask, type TaskRow } from './reconcile.js';
 
 let harness: Harness;
 beforeAll(async () => {
@@ -137,33 +142,70 @@ function fundInstruction(s: Scenario) {
   });
 }
 
+function developerTokenOf(s: Scenario): string {
+  return findAssociatedTokenAddress(s.developer.publicKey, harness.taskra.usdcMint).toBase58();
+}
+
+function approveInstruction(s: Scenario): TransactionInstruction {
+  return approveTask(harness.taskra, {
+    task: s.address,
+    client: s.client.publicKey,
+    developer: s.developer.publicKey,
+    treasury: TREASURY,
+    evidenceHash: s.account.evidenceHash,
+  });
+}
+
+/** What the program's own token calls look like for an approval of `s`. */
+function approveInner(s: Scenario): InnerInstruction[] {
+  return settlementInner(harness, s.task, [
+    [TREASURY.toBase58(), FEE],
+    [developerTokenOf(s), AMOUNT - FEE],
+  ]);
+}
+
+/** An SPL Token `Transfer` between two unrelated accounts, as a top-level instruction. */
+function unrelatedTransfer(to: string, amount: bigint): TransactionInstruction {
+  const data = Buffer.alloc(9);
+  data[0] = 3;
+  data.writeBigUInt64LE(amount, 1);
+  const from = createWallet().publicKey;
+  return new TransactionInstruction({
+    programId: TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: from, isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(to), isSigner: false, isWritable: true },
+      { pubkey: from, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
+}
+
+interface ApproveOptions {
+  readonly finalized: boolean;
+  /** Further top-level instructions placed after approve_task. */
+  readonly extra?: readonly TransactionInstruction[];
+  /** Replaces the inner instructions of approve_task; `null` models a node that reports none. */
+  readonly inner?: readonly InnerInstruction[] | null;
+  /** Inner instructions of the extra instructions, by top-level index. */
+  readonly extraInner?: Readonly<Record<number, readonly InnerInstruction[]>>;
+}
+
 /** Puts an approve_task transaction and the SETTLED account on the fake chain. */
-function approveOnChain(s: Scenario, options: { finalized: boolean }): string {
+function approveOnChain(s: Scenario, options: ApproveOptions): string {
   const signature = randomSignature();
-  const developerToken = findAssociatedTokenAddress(s.developer.publicKey, harness.taskra.usdcMint);
-  const balances: TokenBalanceChange[] = [
-    { account: escrowOf(harness, s.task), mint: 'mint', pre: AMOUNT, post: 0n },
-    { account: developerToken.toBase58(), mint: 'mint', pre: 5n, post: 5n + AMOUNT - FEE },
-    { account: TREASURY.toBase58(), mint: 'mint', pre: 1_000n, post: 1_000n + FEE },
-  ];
   harness.chain.addTransaction(
     {
       signature,
-      instructions: [
-        approveTask(harness.taskra, {
-          task: s.address,
-          client: s.client.publicKey,
-          developer: s.developer.publicKey,
-          treasury: TREASURY,
-          evidenceHash: s.account.evidenceHash,
-        }),
-      ],
-      tokenBalances: balances,
+      instructions: [approveInstruction(s), ...(options.extra ?? [])],
+      ...(options.inner === null
+        ? { innerMissing: true }
+        : { inner: { 0: options.inner ?? approveInner(s), ...options.extraInner } }),
     },
-    options,
+    { finalized: options.finalized },
   );
   s.account = { ...s.account, state: 'SETTLED', outcome: 'APPROVED', closedAt: 1_760_000_900n };
-  harness.chain.setTask(s.address, s.account, options);
+  harness.chain.setTask(s.address, s.account, { finalized: options.finalized });
   return signature;
 }
 
@@ -213,6 +255,8 @@ describe('drafts (T0)', () => {
     ['an amount above u64', { amount: '18446744073709551616' }],
     ['a numeric amount', { amount: 100 as unknown as string }],
     ['a zero duration', { workDuration: '0' }],
+    ['a duration one second above the program maximum', { workDuration: '31536001' }],
+    ['a duration near the i64 limit', { workDuration: '9223372034854775795' }],
     ['blank acceptance criteria', { acceptanceCriteria: '   ' }],
     ['an empty title', { title: ' ' }],
   ])('rejects %s', async (_, patch) => {
@@ -477,10 +521,7 @@ describe('settlement records', () => {
       {
         signature,
         instructions: [cancelTask(harness.taskra, { client: s.client.publicKey, task: s.address })],
-        tokenBalances: [
-          { account: escrowOf(harness, s.task), mint: 'mint', pre: AMOUNT, post: 0n },
-          { account: clientToken.toBase58(), mint: 'mint', pre: 0n, post: AMOUNT },
-        ],
+        inner: { 0: settlementInner(harness, s.task, [[clientToken.toBase58(), AMOUNT]]) },
       },
       { finalized: true },
     );
@@ -497,38 +538,236 @@ describe('settlement records', () => {
       clientAmount: AMOUNT.toString(),
     });
   });
+});
 
-  it('records nothing when the token movements do not add up to the escrow', async () => {
+// M-02 of the security review: whoever sends a settlement can put anything else
+// in the same transaction. None of it may change, or prevent, what is recorded.
+describe('settlement transactions composed with other instructions', () => {
+  async function reputationOf(wallet: TestWallet) {
+    const response = await harness.get(`/api/v1/users/${wallet.address}/reputation`);
+    return response.json<{ developer: { tasksSettled: number; totalEarned: string } }>().developer;
+  }
+
+  it('records the exact settlement when one base unit is also sent to the developer', async () => {
     const s = await scenario('SUBMITTED');
+    // The attack: approve_task plus a 1-unit transfer to the developer's token account.
+    const signature = approveOnChain(s, {
+      finalized: true,
+      extra: [unrelatedTransfer(developerTokenOf(s), 1n)],
+    });
+
+    const task = await getTask(s.task.id);
+    expect(task.settlement).toMatchObject({
+      signature,
+      state: 'SETTLED',
+      feeAmount: FEE.toString(),
+      developerAmount: (AMOUNT - FEE).toString(),
+      clientAmount: '0',
+    });
+
+    // Read again, and report it as well: still one record, credited once.
+    await getTask(s.task.id);
+    await report(s.task, 'approve', { signature }, s.clientCookie);
+    expect(await countRows('settlements', s.task.id)).toBe(1);
+    expect(await reputationOf(s.developer)).toEqual(
+      expect.objectContaining({ tasksSettled: 1, totalEarned: (AMOUNT - FEE).toString() }),
+    );
+  });
+
+  it('ignores large transfers to the treasury and the client made by other instructions', async () => {
+    const s = await scenario('SUBMITTED');
+    const clientToken = findAssociatedTokenAddress(s.client.publicKey, harness.taskra.usdcMint);
+    approveOnChain(s, {
+      finalized: true,
+      extra: [
+        unrelatedTransfer(TREASURY.toBase58(), 9_000_000_000n),
+        unrelatedTransfer(clientToken.toBase58(), 5_000_000n),
+      ],
+    });
+    expect((await getTask(s.task.id)).settlement).toMatchObject({
+      feeAmount: FEE.toString(),
+      developerAmount: (AMOUNT - FEE).toString(),
+      clientAmount: '0',
+    });
+  });
+
+  it('ignores escrow-shaped transfers made inside a different top-level instruction', async () => {
+    const s = await scenario('SUBMITTED');
+    const attacker = createWallet().address;
+    // Another instruction "transfers" from this escrow to the attacker. It is not
+    // the Taskra instruction's own call, so it is not evidence of anything.
+    approveOnChain(s, {
+      finalized: true,
+      extra: [unrelatedTransfer(attacker, 1n)],
+      extraInner: {
+        1: [
+          tokenTransferChecked(
+            escrowOf(harness, s.task),
+            harness.taskra.usdcMint.toBase58(),
+            attacker,
+            s.task.taskAddress,
+            AMOUNT,
+          ),
+        ],
+      },
+    });
+    expect((await getTask(s.task.id)).settlement).toMatchObject({
+      developerAmount: (AMOUNT - FEE).toString(),
+    });
+  });
+
+  // N-3: the program sweeps the whole escrow balance to the developer. A
+  // developer who deposits 1,000,000 USDC into the escrow of a 100 USDC task
+  // gets it straight back; it was never earned.
+  it('does not count a deposit swept back to the developer as earnings', async () => {
+    const s = await scenario('SUBMITTED');
+    const deposit = 1_000_000_000_000n;
+    approveOnChain(s, {
+      finalized: true,
+      inner: settlementInner(harness, s.task, [
+        [TREASURY.toBase58(), FEE],
+        [developerTokenOf(s), AMOUNT - FEE + deposit],
+      ]),
+    });
+    expect((await getTask(s.task.id)).settlement).toMatchObject({
+      amount: AMOUNT.toString(),
+      feeAmount: FEE.toString(),
+      developerAmount: (AMOUNT - FEE).toString(),
+      clientAmount: '0',
+    });
+    expect(await reputationOf(s.developer)).toEqual(
+      expect.objectContaining({ tasksSettled: 1, totalEarned: (AMOUNT - FEE).toString() }),
+    );
+    const clientSide = await harness.get(`/api/v1/users/${s.client.address}/reputation`);
+    expect(clientSide.json<{ client: { totalPaid: string } }>().client.totalPaid).toBe(
+      AMOUNT.toString(),
+    );
+  });
+
+  it('records a refund as the task amount when a deposit is swept back with it', async () => {
+    const s = await scenario('OPEN');
     const signature = randomSignature();
+    const clientToken = findAssociatedTokenAddress(s.client.publicKey, harness.taskra.usdcMint);
     harness.chain.addTransaction(
       {
         signature,
-        instructions: [
-          approveTask(harness.taskra, {
-            task: s.address,
-            client: s.client.publicKey,
-            developer: s.developer.publicKey,
-            treasury: TREASURY,
-            evidenceHash: s.account.evidenceHash,
-          }),
-        ],
-        tokenBalances: [
-          { account: escrowOf(harness, s.task), mint: 'mint', pre: AMOUNT, post: 0n },
-          { account: TREASURY.toBase58(), mint: 'mint', pre: 0n, post: FEE },
-        ],
+        instructions: [cancelTask(harness.taskra, { client: s.client.publicKey, task: s.address })],
+        inner: {
+          0: settlementInner(harness, s.task, [[clientToken.toBase58(), AMOUNT + 12_345n]]),
+        },
       },
       { finalized: true },
     );
-    harness.chain.setTask(
-      s.address,
-      { ...s.account, state: 'SETTLED', outcome: 'APPROVED', closedAt: 1_760_000_900n },
+    s.account = {
+      ...s.account,
+      state: 'CANCELLED',
+      outcome: 'CANCELLED',
+      closedAt: 1_760_000_900n,
+    };
+    harness.chain.setTask(s.address, s.account, { finalized: true });
+    expect((await getTask(s.task.id)).settlement).toMatchObject({
+      state: 'CANCELLED',
+      feeAmount: '0',
+      developerAmount: '0',
+      clientAmount: AMOUNT.toString(),
+    });
+  });
+
+  it('waits, recording nothing, when the RPC node reports no inner instructions', async () => {
+    const s = await scenario('SUBMITTED');
+    const signature = approveOnChain(s, { finalized: true, inner: null });
+    expect((await getTask(s.task.id)).settlement).toBeNull();
+    expect(await countRows('settlements', s.task.id)).toBe(0);
+
+    // A node that does report them: the same transaction is now recorded.
+    harness.chain.addTransaction(
+      { signature, instructions: [approveInstruction(s)], inner: { 0: approveInner(s) } },
       { finalized: true },
     );
+    expect((await getTask(s.task.id)).settlement?.signature).toBe(signature);
+  });
+
+  const mint = () => harness.taskra.usdcMint.toBase58();
+  const malformed: readonly (readonly [string, (s: Scenario) => InnerInstruction[]])[] = [
+    [
+      'the fee did not reach the treasury',
+      (s) => settlementInner(harness, s.task, [[developerTokenOf(s), AMOUNT]]),
+    ],
+    [
+      'the developer received less than the principal minus the fee',
+      (s) =>
+        settlementInner(harness, s.task, [
+          [TREASURY.toBase58(), FEE],
+          [developerTokenOf(s), 1n],
+        ]),
+    ],
+    [
+      'the escrow paid an account the instruction did not name',
+      (s) =>
+        settlementInner(harness, s.task, [
+          [TREASURY.toBase58(), FEE],
+          [developerTokenOf(s), AMOUNT - FEE],
+          [createWallet().address, 1n],
+        ]),
+    ],
+    [
+      'the escrow paid the client on a SETTLED task',
+      (s) =>
+        settlementInner(harness, s.task, [
+          [
+            findAssociatedTokenAddress(s.client.publicKey, harness.taskra.usdcMint).toBase58(),
+            AMOUNT,
+          ],
+        ]),
+    ],
+    ['the escrow was not closed', (s) => approveInner(s).slice(0, 2)],
+    [
+      // Correct in every other respect, so only the authority check can refuse it.
+      'the transfer was not signed by the Task PDA',
+      (s) => [
+        ...approveInner(s).slice(0, 1),
+        tokenTransferChecked(
+          escrowOf(harness, s.task),
+          mint(),
+          developerTokenOf(s),
+          createWallet().address,
+          AMOUNT - FEE,
+        ),
+        ...approveInner(s).slice(2),
+      ],
+    ],
+    [
+      'the escrow was not closed by the Task PDA',
+      (s) => [
+        ...approveInner(s).slice(0, 2),
+        tokenCloseAccount(escrowOf(harness, s.task), s.task.clientWallet, createWallet().address),
+      ],
+    ],
+    [
+      'the transfer was of a different mint',
+      (s) => [
+        tokenTransferChecked(
+          escrowOf(harness, s.task),
+          createWallet().address,
+          TREASURY.toBase58(),
+          s.task.taskAddress,
+          FEE,
+        ),
+        ...approveInner(s).slice(1),
+      ],
+    ],
+    ['there were no transfers at all', () => []],
+  ];
+
+  it.each(malformed)('records no settlement when %s', async (_, inner) => {
+    const s = await scenario('SUBMITTED');
+    approveOnChain(s, { finalized: true, inner: inner(s) });
     const task = await getTask(s.task.id);
+    // The chain state is still shown; only the financial record is withheld.
     expect(task.state).toBe('SETTLED');
     expect(task.settlement).toBeNull();
     expect(await countRows('settlements', s.task.id)).toBe(0);
+    expect((await reputationOf(s.developer)).tasksSettled).toBe(0);
   });
 });
 
@@ -629,12 +868,52 @@ describe('evidence', () => {
     expect(errorCode(response)).toBe('STALE_SUBMISSION');
   });
 
-  it('cannot re-point a registered submission at another pull request', async () => {
+  it('lets the developer correct the pull request of an unverified submission', async () => {
+    const s = await scenario('SUBMITTED');
+    await report(s.task, 'evidence', { prNumber: 43 }, s.developerCookie);
+    // A run for the wrong number finished without verifying anything.
+    await harness.admin.query(`UPDATE verification_jobs SET status = 'DONE', attempts = 2`);
+
+    const corrected = await report(s.task, 'evidence', { prNumber: 42 }, s.developerCookie);
+    expect(corrected.statusCode).toBe(200);
+    expect(corrected.json<{ task: Detail }>().task.verification).toEqual([
+      expect.objectContaining({
+        submissionNonce: '1',
+        prNumber: '42',
+        job: { status: 'QUEUED', attempts: 0 },
+      }),
+    ]);
+    expect(await countRows('submissions', s.task.id)).toBe(1);
+    // Still only the developer.
+    expect((await report(s.task, 'evidence', { prNumber: 44 }, s.clientCookie)).statusCode).toBe(
+      403,
+    );
+  });
+
+  it('locks the registration once the submission is verified', async () => {
     const s = await scenario('SUBMITTED');
     await report(s.task, 'evidence', { prNumber: 42 }, s.developerCookie);
+    const hash = Buffer.from(s.account.evidenceHash).toString('hex');
+    await harness.admin.query(
+      `INSERT INTO verification_results (submission_id, status, rules, ruleset_version,
+              verifier_version, attester_pubkey, repo, pr_number, head_sha, merge_commit_sha,
+              pr_author_id, pr_author_login, merged_by_id, merged_by_login, merged_at,
+              repo_created_at, recomputed_evidence_hash, onchain_evidence_hash,
+              onchain_submission_nonce, github_meta)
+       SELECT id, 'VERIFIED', '[]', 'v', 'test', $2, 'octo-org/parser', 42, $3, $3, 1, 'dev', 2,
+              'maintainer', now(), now(), $4, $4, 1, '{}'
+         FROM submissions WHERE task_id = $1`,
+      [s.task.id, s.developer.address, HEAD_SHA, hash],
+    );
+
     const response = await report(s.task, 'evidence', { prNumber: 43 }, s.developerCookie);
     expect(response.statusCode).toBe(409);
-    expect(errorCode(response)).toBe('EVIDENCE_ALREADY_REGISTERED');
+    expect(errorCode(response)).toBe('EVIDENCE_LOCKED');
+    const stored = await harness.admin.query<{ pr_number: string }>(
+      `SELECT pr_number FROM submissions WHERE task_id = $1`,
+      [s.task.id],
+    );
+    expect(stored.rows).toEqual([{ pr_number: '42' }]);
   });
 
   it('re-queues a finished job that produced no attestation, and registers a resubmission separately', async () => {
@@ -786,5 +1065,392 @@ describe('listing and reputation', () => {
       registered: false,
     });
     expect((await harness.get('/api/v1/users/not-a-wallet')).statusCode).toBe(400);
+  });
+});
+
+// N-1 of the second review: whoever sends a settlement also decides how many
+// Taskra instructions the transaction carries, and for which tasks. A task's
+// outcome must be recorded from its own instruction whatever stands beside it.
+describe('settlement transactions with several Taskra instructions', () => {
+  const VERIFIED_SQL = `SELECT * FROM tasks WHERE id = $1`;
+
+  async function reputationOf(wallet: TestWallet) {
+    const response = await harness.get(`/api/v1/users/${wallet.address}/reputation`);
+    return response.json<{ developer: { tasksSettled: number; totalEarned: string } }>().developer;
+  }
+
+  /** What reconciliation itself reports, including why nothing was recorded. */
+  async function reconcile(s: Scenario) {
+    const row = await harness.admin.query<TaskRow>(VERIFIED_SQL, [s.task.id]);
+    const [task] = row.rows;
+    if (task === undefined) throw new Error('task row is missing');
+    return reconcileTask(harness.deps, task);
+  }
+
+  function markSettled(s: Scenario): void {
+    s.account = { ...s.account, state: 'SETTLED', outcome: 'APPROVED', closedAt: 1_760_000_900n };
+    harness.chain.setTask(s.address, s.account, { finalized: true });
+  }
+
+  function markCancelled(s: Scenario): void {
+    s.account = {
+      ...s.account,
+      state: 'CANCELLED',
+      outcome: 'CANCELLED',
+      closedAt: 1_760_000_900n,
+    };
+    harness.chain.setTask(s.address, s.account, { finalized: true });
+  }
+
+  const cancelInstruction = (s: Scenario) =>
+    cancelTask(harness.taskra, { client: s.client.publicKey, task: s.address });
+  const cancelInner = (s: Scenario) =>
+    settlementInner(harness, s.task, [
+      [findAssociatedTokenAddress(s.client.publicKey, harness.taskra.usdcMint).toBase58(), AMOUNT],
+    ]);
+
+  const exactSettlement = (signature: string) => ({
+    signature,
+    state: 'SETTLED',
+    feeAmount: FEE.toString(),
+    developerAmount: (AMOUNT - FEE).toString(),
+    clientAmount: '0',
+  });
+
+  it('records the settlement when the same transaction also creates another task', async () => {
+    const s = await scenario('SUBMITTED');
+    const other = await scenario('DRAFT');
+    // The attack: approve_task, plus create_and_fund_task for an unrelated task.
+    const signature = approveOnChain(s, { finalized: true, extra: [fundInstruction(other)] });
+
+    expect((await getTask(s.task.id)).settlement).toMatchObject(exactSettlement(signature));
+    // Reported as well, and read again: still one record, credited once.
+    const reported = await report(s.task, 'approve', { signature }, s.clientCookie);
+    expect(reported.statusCode).toBe(200);
+    await getTask(s.task.id);
+    expect(await countRows('settlements', s.task.id)).toBe(1);
+    expect(await reputationOf(s.developer)).toEqual(
+      expect.objectContaining({ tasksSettled: 1, totalEarned: (AMOUNT - FEE).toString() }),
+    );
+    // The other task was created by the same transaction and can report it too.
+    const funded = await report(other.task, 'fund', { signature }, other.clientCookie);
+    expect(funded.statusCode).toBe(200);
+    expect(funded.json<{ transaction: { instruction: string } }>().transaction.instruction).toBe(
+      'create_and_fund_task',
+    );
+  });
+
+  it('records both tasks, once each, when one transaction settles two', async () => {
+    const paid = await scenario('SUBMITTED');
+    const withdrawn = await scenario('OPEN');
+    const signature = randomSignature();
+    harness.chain.addTransaction(
+      {
+        signature,
+        instructions: [approveInstruction(paid), cancelInstruction(withdrawn)],
+        inner: { 0: approveInner(paid), 1: cancelInner(withdrawn) },
+      },
+      { finalized: true },
+    );
+    markSettled(paid);
+    markCancelled(withdrawn);
+
+    // Concurrent reads and reports of the one signature, for both tasks.
+    await Promise.all([
+      ...Array.from({ length: 4 }, () => harness.get(`/api/v1/tasks/${paid.task.id}`)),
+      ...Array.from({ length: 4 }, () => harness.get(`/api/v1/tasks/${withdrawn.task.id}`)),
+      ...Array.from({ length: 3 }, () =>
+        report(paid.task, 'approve', { signature }, paid.clientCookie),
+      ),
+      ...Array.from({ length: 3 }, () =>
+        report(withdrawn.task, 'transactions', { signature }, withdrawn.clientCookie),
+      ),
+    ]);
+
+    expect((await getTask(paid.task.id)).settlement).toMatchObject(exactSettlement(signature));
+    expect((await getTask(withdrawn.task.id)).settlement).toMatchObject({
+      signature,
+      state: 'CANCELLED',
+      feeAmount: '0',
+      developerAmount: '0',
+      clientAmount: AMOUNT.toString(),
+    });
+    for (const s of [paid, withdrawn]) {
+      expect(await countRows('settlements', s.task.id)).toBe(1);
+      expect(await countRows('onchain_transactions', s.task.id)).toBe(1);
+    }
+    expect((await reputationOf(paid.developer)).tasksSettled).toBe(1);
+  });
+
+  it('gives each task only the transfers its own instruction made', async () => {
+    const paid = await scenario('SUBMITTED');
+    const withdrawn = await scenario('OPEN');
+    const signature = randomSignature();
+    harness.chain.addTransaction(
+      {
+        signature,
+        instructions: [approveInstruction(paid), cancelInstruction(withdrawn)],
+        inner: {
+          0: approveInner(paid),
+          // Listed under the other task's instruction, so not the first task's own.
+          1: [
+            ...cancelInner(withdrawn),
+            tokenTransferChecked(
+              escrowOf(harness, paid.task),
+              harness.taskra.usdcMint.toBase58(),
+              createWallet().address,
+              paid.task.taskAddress,
+              AMOUNT,
+            ),
+          ],
+        },
+      },
+      { finalized: true },
+    );
+    markSettled(paid);
+    markCancelled(withdrawn);
+    expect((await getTask(paid.task.id)).settlement).toMatchObject(exactSettlement(signature));
+    expect((await getTask(withdrawn.task.id)).settlement?.clientAmount).toBe(AMOUNT.toString());
+  });
+
+  it('records nothing if a successful transaction claims two outcomes for one task', async () => {
+    const s = await scenario('SUBMITTED');
+    // Cannot happen on-chain: the second outcome instruction would fail.
+    const signature = approveOnChain(s, {
+      finalized: true,
+      extra: [approveInstruction(s)],
+      extraInner: { 1: approveInner(s) },
+    });
+    expect((await getTask(s.task.id)).settlement).toBeNull();
+    expect(await countRows('settlements', s.task.id)).toBe(0);
+    const { problem } = await reconcile(s);
+    expect(problem).toBeInstanceOf(SettlementEvidenceError);
+    expect(String(problem)).toMatch(/more than one outcome instruction/);
+    const reported = await report(s.task, 'approve', { signature }, s.clientCookie);
+    expect(reported.statusCode).toBe(422);
+  });
+
+  it('passes over a failed transaction carrying the outcome instruction', async () => {
+    const s = await scenario('SUBMITTED');
+    const good = approveOnChain(s, { finalized: true });
+    // Newer, failed, and "paying" somebody else entirely.
+    harness.chain.addTransaction(
+      {
+        signature: randomSignature(),
+        instructions: [approveInstruction(s)],
+        inner: { 0: settlementInner(harness, s.task, [[createWallet().address, AMOUNT]]) },
+        error: { InstructionError: [0, { Custom: 6000 }] },
+      },
+      { finalized: true },
+    );
+    expect((await getTask(s.task.id)).settlement).toMatchObject(exactSettlement(good));
+    expect(await countRows('settlements', s.task.id)).toBe(1);
+  });
+
+  it('waits when inner instructions are missing for a two-instruction transaction, then records both', async () => {
+    const paid = await scenario('SUBMITTED');
+    const withdrawn = await scenario('OPEN');
+    const signature = randomSignature();
+    const instructions = [approveInstruction(paid), cancelInstruction(withdrawn)];
+    harness.chain.addTransaction(
+      { signature, instructions, innerMissing: true },
+      { finalized: true },
+    );
+    markSettled(paid);
+    markCancelled(withdrawn);
+    for (const s of [paid, withdrawn]) {
+      expect((await getTask(s.task.id)).settlement).toBeNull();
+      expect(await countRows('settlements', s.task.id)).toBe(0);
+    }
+    harness.chain.addTransaction(
+      { signature, instructions, inner: { 0: approveInner(paid), 1: cancelInner(withdrawn) } },
+      { finalized: true },
+    );
+    for (const s of [paid, withdrawn]) {
+      expect((await getTask(s.task.id)).settlement?.signature).toBe(signature);
+    }
+  });
+
+  // Not supported, and refused explicitly: approve_task invoked by another
+  // program is not a top-level instruction (docs/13-DECISIONS.md, section 17.4).
+  describe('through another program', () => {
+    function wrappedApproval(s: Scenario, options: { innerMissing?: boolean } = {}): string {
+      const signature = randomSignature();
+      const approve = approveInstruction(s);
+      const wrapper = new TransactionInstruction({
+        programId: createWallet().publicKey,
+        keys: approve.keys,
+        data: Buffer.from([1]),
+      });
+      harness.chain.addTransaction(
+        {
+          signature,
+          instructions: [wrapper],
+          ...(options.innerMissing === true
+            ? { innerMissing: true }
+            : {
+                inner: {
+                  0: [
+                    {
+                      programId: approve.programId.toBase58(),
+                      accounts: approve.keys.map((key) => key.pubkey.toBase58()),
+                      data: Uint8Array.from(approve.data),
+                    },
+                    ...approveInner(s),
+                  ],
+                },
+              }),
+        },
+        { finalized: true },
+      );
+      markSettled(s);
+      return signature;
+    }
+
+    it('records no settlement and no reputation, and says why', async () => {
+      const s = await scenario('SUBMITTED');
+      const signature = wrappedApproval(s);
+      const task = await getTask(s.task.id);
+      // The chain state is still shown truthfully.
+      expect(task.state).toBe('SETTLED');
+      expect(task.settlement).toBeNull();
+      expect(await countRows('settlements', s.task.id)).toBe(0);
+      expect((await reputationOf(s.developer)).tasksSettled).toBe(0);
+
+      const { problem } = await reconcile(s);
+      expect(problem).toBeInstanceOf(SettlementEvidenceError);
+      expect(String(problem)).toContain(signature);
+      expect(String(problem)).toMatch(/through another program/);
+
+      const reported = await report(s.task, 'approve', { signature }, s.clientCookie);
+      expect(reported.statusCode).toBe(422);
+      expect(errorCode(reported)).toBe('TRANSACTION_MISMATCH');
+    });
+
+    it('cannot tell without inner instructions, records nothing and says the outcome was not found', async () => {
+      const s = await scenario('SUBMITTED');
+      wrappedApproval(s, { innerMissing: true });
+      expect((await getTask(s.task.id)).settlement).toBeNull();
+      const { problem } = await reconcile(s);
+      expect(problem).toBeInstanceOf(SettlementEvidenceError);
+      expect(String(problem)).toMatch(/outcome transaction was not found/);
+      expect(await countRows('settlements', s.task.id)).toBe(0);
+    });
+  });
+
+  // L-07: discovery reads a bounded number of signatures. An outcome pushed out
+  // of that window must not stay unrecorded in silence, and must be recoverable.
+  describe('whose signature is not among the newest for the task', () => {
+    it('reports that the outcome was not found, then records it once it is reported', async () => {
+      const s = await scenario('SUBMITTED');
+      const signature = approveOnChain(s, { finalized: true });
+      // Anyone can do this: 25 newer transactions that merely name the Task account.
+      for (let count = 0; count < 25; count += 1) {
+        harness.chain.addTransaction(
+          {
+            signature: randomSignature(),
+            instructions: [
+              new TransactionInstruction({
+                programId: createWallet().publicKey,
+                keys: [{ pubkey: s.address, isSigner: false, isWritable: false }],
+                data: Buffer.from([0]),
+              }),
+            ],
+          },
+          { finalized: true },
+        );
+      }
+
+      expect((await getTask(s.task.id)).settlement).toBeNull();
+      const { problem } = await reconcile(s);
+      expect(problem).toBeInstanceOf(SettlementEvidenceError);
+      expect(String(problem)).toMatch(/outcome transaction was not found/);
+      expect((await reputationOf(s.developer)).tasksSettled).toBe(0);
+
+      // Anyone signed in can report it; the developer has every reason to.
+      const reported = await report(s.task, 'transactions', { signature }, s.developerCookie);
+      expect(reported.statusCode).toBe(200);
+      expect((await getTask(s.task.id)).settlement).toMatchObject(exactSettlement(signature));
+      expect((await reconcile(s)).problem).toBeUndefined();
+      expect(await reputationOf(s.developer)).toEqual(
+        expect.objectContaining({ tasksSettled: 1, totalEarned: (AMOUNT - FEE).toString() }),
+      );
+    });
+  });
+});
+
+// N-2 of the second review: a correction of the pull-request number and the
+// attestation service's VERIFIED record must not interleave.
+describe('correcting evidence while it is being verified', () => {
+  async function waitingForALock(): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const waiting = await harness.admin.query(
+        `SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+      );
+      if (waiting.rowCount !== 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('no statement started waiting for a lock');
+  }
+
+  it('answers EVIDENCE_LOCKED when the VERIFIED result commits while the correction waits', async () => {
+    const s = await scenario('SUBMITTED');
+    await report(s.task, 'evidence', { prNumber: 42 }, s.developerCookie);
+    const hash = Buffer.from(s.account.evidenceHash).toString('hex');
+    const attester = await harness.admin.connect();
+    let response: LightMyRequestResponse;
+    try {
+      // The attestation service's transaction: VERIFIED for #42, not yet committed.
+      await attester.query('BEGIN');
+      await attester.query(
+        `INSERT INTO verification_results (submission_id, status, rules, ruleset_version,
+                verifier_version, attester_pubkey, repo, pr_number, head_sha, merge_commit_sha,
+                pr_author_id, pr_author_login, merged_by_id, merged_by_login, merged_at,
+                repo_created_at, recomputed_evidence_hash, onchain_evidence_hash,
+                onchain_submission_nonce, github_meta)
+         SELECT id, 'VERIFIED', '[]', 'v', 'test', $2, 'octo-org/parser', 42, $3, $3, 1, 'dev', 2,
+                'maintainer', now(), now(), $4, $4, 1, '{}'
+           FROM submissions WHERE task_id = $1`,
+        [s.task.id, s.developer.address, HEAD_SHA, hash],
+      );
+      const pending = report(s.task, 'evidence', { prNumber: 43 }, s.developerCookie);
+      await waitingForALock();
+      await attester.query('COMMIT');
+      response = await pending;
+    } finally {
+      attester.release();
+    }
+    expect(response.statusCode).toBe(409);
+    expect(errorCode(response)).toBe('EVIDENCE_LOCKED');
+    const stored = await harness.admin.query<{ registered: string; verified: string }>(
+      `SELECT s.pr_number AS registered, r.pr_number AS verified
+         FROM submissions s JOIN verification_results r ON r.submission_id = s.id
+        WHERE s.task_id = $1 AND r.status = 'VERIFIED'`,
+      [s.task.id],
+    );
+    expect(stored.rows).toEqual([{ registered: '42', verified: '42' }]);
+  });
+
+  it('does not show a result for the old number as the status of a corrected registration', async () => {
+    const s = await scenario('SUBMITTED');
+    await report(s.task, 'evidence', { prNumber: 43 }, s.developerCookie);
+    await harness.admin.query(
+      `INSERT INTO verification_results (submission_id, status, rules, ruleset_version,
+              verifier_version, attester_pubkey, repo, pr_number, github_meta)
+       SELECT id, 'REJECTED', '[]', 'v', 'test', $2, 'octo-org/parser', 43, '{}'
+         FROM submissions WHERE task_id = $1`,
+      [s.task.id, s.developer.address],
+    );
+    expect((await getTask(s.task.id)).verification[0]).toMatchObject({
+      prNumber: '43',
+      status: 'REJECTED',
+    });
+    await report(s.task, 'evidence', { prNumber: 42 }, s.developerCookie);
+    // #42 has not been checked yet; the rejection was about #43.
+    expect((await getTask(s.task.id)).verification[0]).toMatchObject({
+      prNumber: '42',
+      status: 'PENDING',
+    });
   });
 });

@@ -4,10 +4,17 @@
 // request: the repository comes from metadata bound by the on-chain terms hash,
 // the head SHA comes from GitHub, and the hash is recomputed here.
 
-import { evidenceHash, type TaskAccount, toHex } from '@taskra/sdk';
-import type { GithubOutcome, PullRequest, Repository } from './github.js';
+import {
+  DEVELOPER_TRAILER,
+  evidenceHash,
+  evidenceTrailers,
+  type TaskAccount,
+  TASK_TRAILER,
+  toHex,
+} from '@taskra/sdk';
+import type { Commit, GithubOutcome, PullRequest, Repository } from './github.js';
 
-export const RULESET_VERSION = 'taskra-rules-v1';
+export const RULESET_VERSION = 'taskra-rules-v2';
 
 export type VerificationStatus = 'VERIFIED' | 'REJECTED' | 'PENDING';
 
@@ -56,12 +63,22 @@ export type Preconditions =
 export function checkPreconditions(input: {
   readonly task: TaskAccount;
   readonly chainTime: bigint;
+  /** Whether the Task account's own `task_id` is the id of the database record. */
+  readonly taskIdMatches: boolean;
   readonly termsMatch: boolean;
   readonly submission: SubmissionRecord;
 }): Preconditions {
   const { task, submission } = input;
   const rules: RuleResult[] = [];
 
+  // The task id that R11 compares the head commit with comes from the database
+  // record. It only means something if the account at the record's address is
+  // that task: the address is derived from the id, and the program wrote the
+  // id into the account when it created it.
+  if (!input.taskIdMatches) {
+    rules.push(fail('P1', 'The Task account at the stored address is a different task.'));
+    return { kind: 'rejected', rules };
+  }
   if (!input.termsMatch) {
     rules.push(
       fail('P1', 'The stored task terms do not hash to the terms hash on the Task account.'),
@@ -95,6 +112,31 @@ export function checkPreconditions(input: {
   return { kind: 'proceed', rules };
 }
 
+/** The two lines a pull request's final commit must carry to count for a task. */
+export const requiredTrailers = evidenceTrailers;
+
+const TRAILER_LINE = /^(Taskra-Task|Taskra-Developer):[ \t]*(\S+)[ \t]*$/i;
+
+export interface CommitTrailers {
+  /** Distinct task ids named, lower-cased. */
+  readonly tasks: readonly string[];
+  /** Distinct wallet addresses named, exactly as written. */
+  readonly developers: readonly string[];
+}
+
+/** Every `Taskra-Task:` and `Taskra-Developer:` line of a commit message. */
+export function commitTrailers(message: string): CommitTrailers {
+  const tasks = new Set<string>();
+  const developers = new Set<string>();
+  for (const line of message.split(/\r?\n/)) {
+    const match = line.match(TRAILER_LINE);
+    if (match?.[1] === undefined || match[2] === undefined) continue;
+    if (match[1].toLowerCase() === 'taskra-task') tasks.add(match[2].toLowerCase());
+    else developers.add(match[2]);
+  }
+  return { tasks: [...tasks], developers: [...developers] };
+}
+
 export interface EvidenceInput {
   /** Canonical `owner/name` from the task's verified metadata. */
   readonly repo: string;
@@ -105,9 +147,15 @@ export interface EvidenceInput {
   readonly pullRequest: GithubOutcome<PullRequest>;
   /** Fetched only when the pull request was not found, to tell R1/R4 from R3. */
   readonly repository: GithubOutcome<Repository> | null;
+  /** The task's UUID: the value the head commit must name. */
+  readonly taskId: string;
+  /** The on-chain developer of the task: the wallet the head commit must name. */
+  readonly developerWallet: string | null;
+  /** The pull request's head commit, fetched once the pull request is known. */
+  readonly headCommit: GithubOutcome<Commit> | null;
 }
 
-/** R1–R10. Call only after `checkPreconditions` returned `proceed`. */
+/** R1–R12. Call only after `checkPreconditions` returned `proceed`. */
 export function evaluateEvidence(
   input: EvidenceInput,
   preconditions: readonly RuleResult[],
@@ -202,6 +250,49 @@ export function evaluateEvidence(
           'The evidence hash recomputed from GitHub differs from the on-chain hash (the pull request head changed, or the hash was not made from this pull request).',
         ),
   );
+
+  // R11 and R12: the pull request must itself say which task it is for and
+  // which wallet is to be paid. The statement is read from the head commit's
+  // message, which is fixed by the head SHA the evidence hash commits to: it
+  // cannot be added or changed after the fact, and a pull request that was not
+  // made for this task does not carry it.
+  const headCommit = input.headCommit;
+  if (headCommit === null || headCommit.kind === 'unavailable') {
+    return pending(headCommit === null ? 'The head commit was not read.' : headCommit.reason);
+  }
+  if (headCommit.kind === 'not_found') {
+    rules.push(
+      fail('R11', 'GitHub does not have the head commit of the pull request.'),
+      skip('R12', 'No head commit.'),
+    );
+  } else {
+    const trailers = commitTrailers(headCommit.value.message);
+    const taskId = input.taskId.toLowerCase();
+    if (trailers.tasks.length === 0) {
+      rules.push(fail('R11', `The head commit message has no "${TASK_TRAILER}: ${taskId}" line.`));
+    } else if (trailers.tasks.length > 1) {
+      rules.push(fail('R11', 'The head commit names more than one task.'));
+    } else if (trailers.tasks[0] !== taskId) {
+      rules.push(fail('R11', 'The head commit names a different task.'));
+    } else {
+      rules.push(pass('R11', 'The head commit names this task.'));
+    }
+
+    if (input.developerWallet === null) {
+      rules.push(fail('R12', 'The task has no developer.'));
+    } else if (trailers.developers.length === 0) {
+      rules.push(
+        fail(
+          'R12',
+          `The head commit message has no "${DEVELOPER_TRAILER}: ${input.developerWallet}" line.`,
+        ),
+      );
+    } else if (trailers.developers.length > 1 || trailers.developers[0] !== input.developerWallet) {
+      rules.push(fail('R12', "The head commit does not name exactly the task's developer wallet."));
+    } else {
+      rules.push(pass('R12', "The head commit names the task's developer wallet."));
+    }
+  }
 
   const verified = rules.every((rule) => rule.passed === true);
   if (verified && pr.mergeCommitSha === null) {

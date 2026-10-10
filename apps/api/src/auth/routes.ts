@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { servedOverHttps } from '../config.js';
 import type { AppDeps } from '../deps.js';
 import { ApiError, unauthorized } from '../errors.js';
 import { signatureSchema, walletSchema } from '../validation.js';
@@ -52,7 +53,7 @@ function cookieOptions(deps: AppDeps) {
     httpOnly: true,
     // The web app and the API must share a site; the cookie never rides a cross-site request.
     sameSite: 'strict',
-    secure: deps.config.NODE_ENV === 'production',
+    secure: servedOverHttps(deps.config),
     path: '/',
   } as const;
 }

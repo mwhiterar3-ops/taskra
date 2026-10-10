@@ -12,6 +12,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { createTransferInstruction } from '@solana/spl-token';
 import { Keypair, type PublicKey, SystemProgram } from '@solana/web3.js';
 import {
   acceptTask,
@@ -20,11 +21,13 @@ import {
   createAndFundTask,
   createUsdcAccountIdempotent,
   evidenceHash,
+  evidenceTrailers,
   expireDispute,
   expireReview,
   fetchChainTime,
   fetchTokenAmount,
   findAssociatedTokenAddress,
+  findEscrowAddress,
   findTaskAddress,
   fromHex,
   openDeveloperDispute,
@@ -150,7 +153,7 @@ async function accept(p: Party, task: Funded): Promise<void> {
 async function submit(
   p: Party,
   task: Funded,
-  options: { merged: boolean },
+  options: { merged: boolean; unrelated?: boolean },
 ): Promise<{ prNumber: bigint; hash: Uint8Array }> {
   nextPullNumber += 1n;
   const prNumber = nextPullNumber;
@@ -163,6 +166,13 @@ async function submit(
     mergedAt: options.merged ? mergedAt.replace('.000Z', 'Z') : null,
     mergeCommitSha: options.merged ? 'c'.repeat(40) : null,
     headSha,
+    // A pull request made for this task says so in its final commit. An
+    // unrelated one (the M-01 scenario) is a perfectly good merged pull request
+    // that says nothing about any task.
+    headMessage:
+      options.unrelated === true
+        ? 'Fix a typo in the README'
+        : `Add the parser\n\n${evidenceTrailers(task.id, p.developer.address)}\n`,
     author: p.developerUser,
     mergedBy: options.merged ? MAINTAINER : null,
   });
@@ -280,7 +290,17 @@ async function scenarioApprove(): Promise<{
       owner: p.developer.publicKey,
     }),
     approveTask(world.config, { ...settlementParties(p, task), evidenceHash: hash }),
+    // M-02: whoever sends the settlement can add transfers of their own. This one
+    // sends one extra base unit to the developer in the same transaction. Before
+    // the fix the API then refused to record the settlement at all.
+    createTransferInstruction(
+      findAssociatedTokenAddress(p.client.publicKey, world.config.usdcMint),
+      findAssociatedTokenAddress(p.developer.publicKey, world.config.usdcMint),
+      p.client.publicKey,
+      1n,
+    ),
   ];
+  await world.fundUsdc(p.client.publicKey, 1n);
   const approveSignature = await p.client.send(approve);
   const reported = await p.client.report(task.id, 'approve', { signature: approveSignature });
   checkTrue(
@@ -301,9 +321,9 @@ async function scenarioApprove(): Promise<{
     (AMOUNT - FEE).toString(),
   );
   check(
-    'developer balance grew by 97.50 USDC',
+    'developer balance grew by 97.50 USDC plus the one unrelated unit',
     (await usdc(p.developer.publicKey)) - before.developer,
-    AMOUNT - FEE,
+    AMOUNT - FEE + 1n,
   );
   check(
     'treasury balance grew by 2.50 USDC',
@@ -424,7 +444,11 @@ async function scenarioCancel(other: { task: Funded; approveSignature: string })
     `/api/v1/tasks/${task.id}/approve`,
     { signature: other.approveSignature },
   );
-  check('a signature recorded for another task is refused', wrongTask.status, 409);
+  check(
+    'a transaction that carries nothing for this task is refused',
+    [wrongTask.status, wrongTask.body.error.code],
+    [422, 'TRANSACTION_MISMATCH'],
+  );
   const transfer = await p.client.send([
     SystemProgram.transfer({
       fromPubkey: p.client.publicKey,
@@ -722,7 +746,157 @@ async function scenarioResubmission(): Promise<void> {
   await world.owner.query(`UPDATE tasks SET repo = $2 WHERE id = $1`, [task.id, REPO]);
 }
 
+// --- H: a pull request that was not made for the task ------------------------
+
+async function scenarioUnrelatedPullRequest(): Promise<void> {
+  section('H. an unrelated merged pull request cannot satisfy a task (M-01)');
+  const p = await party('H');
+  const task = await fundTask(p.client, 600n);
+  await accept(p, task);
+
+  // Merged by a maintainer, written by the developer, right repository, inside
+  // the work window, hash correct: every rule that existed before passes.
+  await submit(p, task, { merged: true, unrelated: true });
+  const rejected = await until(
+    'verification REJECTED for the unrelated pull request',
+    () => p.developer.task(task.id),
+    (view) => view.verification[0]?.status === 'REJECTED',
+  );
+  const rules = new Map(
+    rejected.verification[0]?.result?.rules.map((rule) => [rule.rule, rule.passed]),
+  );
+  check(
+    'every earlier rule (R1-R9) passes for it',
+    ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'].every(
+      (rule) => rules.get(rule) === true,
+    ),
+    true,
+  );
+  check('it is rejected for not naming the task (R11)', rules.get('R11'), false);
+  check('and for not naming the developer wallet (R12)', rules.get('R12'), false);
+  check('no attestation was requested', rejected.verification[0]?.attestation, null);
+  check('the task is still SUBMITTED', rejected.chain?.state, 'SUBMITTED');
+  check('no valid attestation on-chain', rejected.chain?.hasValidAttestation, false);
+
+  // The developer then submits a pull request that is for this task.
+  await submit(p, task, { merged: true });
+  const attested = await waitForAttestation(p.developer, task);
+  check(
+    'a pull request made for the task is verified',
+    attested.verification[0]?.status,
+    'VERIFIED',
+  );
+  check(
+    'one attestation for the task: the unrelated submission never got one',
+    await count(`SELECT count(*) FROM attestations WHERE task_id = $1`, [task.id]),
+    1,
+  );
+}
+
 // --- G: the services as real processes ---------------------------------------
+
+// --- I: one transaction, two tasks and a deposit -----------------------------
+
+async function scenarioComposedSettlement(): Promise<void> {
+  section('I. one transaction settles two tasks and carries a deposit (N-1, N-3)');
+  const p = await party('I');
+  // 1,000,000 USDC, deposited into the escrow of a 100 USDC task.
+  const DEPOSIT = 1_000_000_000_000n;
+  await world.fundUsdc(p.client.publicKey, AMOUNT + DEPOSIT);
+  const paid = await fundTask(p.client, 600n);
+  const withdrawn = await fundTask(p.client, 600n);
+  await accept(p, paid);
+  const { hash } = await submit(p, paid, { merged: true });
+
+  const clientToken = findAssociatedTokenAddress(p.client.publicKey, world.config.usdcMint);
+  const before = {
+    developer: await usdc(p.developer.publicKey),
+    client: (await fetchTokenAmount(world.connection, clientToken, 'confirmed')) ?? 0n,
+  };
+  // Everything the sender of a settlement can add to it, in one real
+  // transaction: a deposit into the escrow, the outcome of a second task, and
+  // so a second top-level Taskra instruction. Before the fixes the API recorded
+  // neither settlement, and would have counted the deposit as earnings.
+  const signature = await p.client.send([
+    createUsdcAccountIdempotent(world.config, {
+      payer: p.client.publicKey,
+      owner: p.developer.publicKey,
+    }),
+    createTransferInstruction(
+      clientToken,
+      findEscrowAddress(world.config.programId, paid.address)[0],
+      p.client.publicKey,
+      DEPOSIT,
+    ),
+    approveTask(world.config, { ...settlementParties(p, paid), evidenceHash: hash }),
+    cancelTask(world.config, { client: p.client.publicKey, task: withdrawn.address }),
+  ]);
+
+  const approved = await p.client.report(paid.id, 'approve', { signature });
+  check(
+    'the report names approve_task for the first task',
+    approved.transaction.instruction,
+    'approve_task',
+  );
+  const cancelled = await p.client.report(withdrawn.id, 'transactions', { signature });
+  check(
+    'the same signature names cancel_task for the second task',
+    cancelled.transaction.instruction,
+    'cancel_task',
+  );
+
+  const settled = await waitForSettlement(p.client, paid);
+  check('first task: settled by that transaction', settled.settlement?.signature, signature);
+  check('first task: outcome', settled.settlement?.outcome, 'APPROVED');
+  check('first task: fee is the task fee', settled.settlement?.feeAmount, FEE.toString());
+  check(
+    'first task: earnings are the task amount less the fee, not the deposit',
+    settled.settlement?.developerAmount,
+    (AMOUNT - FEE).toString(),
+  );
+  check(
+    'yet the developer really received the deposit as well',
+    (await usdc(p.developer.publicKey)) - before.developer,
+    AMOUNT - FEE + DEPOSIT,
+  );
+
+  const refunded = await waitForSettlement(p.client, withdrawn);
+  check('second task: settled by the same transaction', refunded.settlement?.signature, signature);
+  check('second task: outcome', refunded.settlement?.outcome, 'CANCELLED');
+  check(
+    'second task: client refunded the task amount',
+    refunded.settlement?.clientAmount,
+    AMOUNT.toString(),
+  );
+  check(
+    'the client got one task back and paid the deposit',
+    ((await fetchTokenAmount(world.connection, clientToken, 'finalized')) ?? 0n) - before.client,
+    AMOUNT - DEPOSIT,
+  );
+
+  check(
+    'two settlements name the one transaction',
+    await count(`SELECT count(*) FROM settlements WHERE signature = $1`, [signature]),
+    2,
+  );
+  check(
+    'recorded once per task',
+    await count(`SELECT count(*) FROM onchain_transactions WHERE signature = $1`, [signature]),
+    2,
+  );
+  // Read again and report again: nothing is credited twice.
+  await p.client.report(paid.id, 'approve', { signature });
+  await p.developer.task(paid.id);
+  const reputation = await p.client.call<{
+    developer: { tasksSettled: number; totalEarned: string };
+  }>('GET', `/api/v1/users/${p.developer.address}/reputation`);
+  check('reputation: one settled task', reputation.developer.tasksSettled, 1);
+  check(
+    'reputation: 97.50 USDC earned, not 1,000,097.50',
+    reputation.developer.totalEarned,
+    (AMOUNT - FEE).toString(),
+  );
+}
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -859,6 +1033,8 @@ try {
   await scenarioRejected();
   await scenarioUnverified();
   await scenarioResubmission();
+  await scenarioUnrelatedPullRequest();
+  await scenarioComposedSettlement();
   await scenarioProcesses(world);
 } catch (error) {
   failure = error;

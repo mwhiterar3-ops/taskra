@@ -16,13 +16,15 @@ import {
   type TaskAccount,
   termsMatchTask,
   toHex,
+  uuidFromTaskId,
 } from '@taskra/sdk';
-import { isUniqueViolation, withTransaction } from '@taskra/shared/db';
+import { isSerializationFailure, isUniqueViolation, withTransaction } from '@taskra/shared/db';
 import type pg from 'pg';
 import type { AttesterChain } from './chain.js';
-import type { GithubCallMeta, GithubClient, GithubOutcome, PullRequest } from './github.js';
+import type { Commit, GithubCallMeta, GithubClient, GithubOutcome, PullRequest } from './github.js';
 import {
   checkPreconditions,
+  commitTrailers,
   evaluateEvidence,
   type RuleResult,
   RULESET_VERSION,
@@ -30,7 +32,7 @@ import {
 } from './rules.js';
 import type { AttestationSigner } from './signer.js';
 
-export const VERIFIER_VERSION = 'taskra-attester/1';
+export const VERIFIER_VERSION = 'taskra-attester/2';
 
 /** A claimed job that is not finished within this time may be claimed again. */
 const JOB_LEASE_MS = 2 * 60 * 1000;
@@ -120,6 +122,7 @@ export function createWorker(deps: WorkerDeps): Worker {
       pullRequest: GithubOutcome<PullRequest> | null;
       recomputedHash: string | null;
       calls: readonly GithubCallMeta[];
+      headCommit?: GithubOutcome<Commit> | null;
     },
   ): Promise<void> {
     const pr = details.pullRequest?.kind === 'ok' ? details.pullRequest.value : null;
@@ -155,7 +158,14 @@ export function createWorker(deps: WorkerDeps): Worker {
           account === null || account.submissionNonce === 0n ? null : toHex(account.evidenceHash),
           account === null ? null : account.submissionNonce.toString(),
           details.slot,
-          JSON.stringify({ calls: details.calls }),
+          JSON.stringify({
+            calls: details.calls,
+            // What the head commit said, kept so a result can be re-examined later.
+            headCommitTrailers:
+              details.headCommit?.kind === 'ok'
+                ? commitTrailers(details.headCommit.value.message)
+                : null,
+          }),
           deps.now(),
         ],
       );
@@ -222,6 +232,7 @@ export function createWorker(deps: WorkerDeps): Worker {
     const preconditions = checkPreconditions({
       task: account,
       chainTime: await chain.getChainTime('finalized'),
+      taskIdMatches: uuidFromTaskId(account.taskId) === submission.task_id.toLowerCase(),
       termsMatch: termsMatchTask(
         {
           repo: submission.repo,
@@ -255,6 +266,10 @@ export function createWorker(deps: WorkerDeps): Worker {
     const pullRequest = await github.getPullRequest(submission.repo, record.prNumber);
     const repository =
       pullRequest.kind === 'not_found' ? await github.getRepository(submission.repo) : null;
+    const headCommit =
+      pullRequest.kind === 'ok'
+        ? await github.getCommit(submission.repo, pullRequest.value.headSha)
+        : null;
     const verdict = evaluateEvidence(
       {
         repo: submission.repo,
@@ -263,6 +278,9 @@ export function createWorker(deps: WorkerDeps): Worker {
         developerGithubId: linked === undefined ? null : BigInt(linked.github_user_id),
         pullRequest,
         repository,
+        taskId: submission.task_id,
+        developerWallet: developer,
+        headCommit,
       },
       preconditions.rules,
     );
@@ -273,11 +291,27 @@ export function createWorker(deps: WorkerDeps): Worker {
         slot,
         pullRequest,
         recomputedHash: verdict.recomputedHash,
-        calls: [pullRequest.meta, ...(repository === null ? [] : [repository.meta])],
+        calls: [
+          pullRequest.meta,
+          ...(repository === null ? [] : [repository.meta]),
+          ...(headCommit === null ? [] : [headCommit.meta]),
+        ],
+        headCommit,
       });
     } catch (error) {
       // Another worker recorded the VERIFIED result first. One is enough.
       if (isUniqueViolation(error)) return 'done';
+      if (isSerializationFailure(error)) {
+        // The developer corrected the pull-request number while this run was
+        // checking the old one. The database refused the VERIFIED result, so
+        // nothing was recorded and nothing will be signed; verify again from
+        // what is registered now.
+        log.info(
+          { submissionId, taskId: submission.task_id },
+          'registration changed during verification; retrying',
+        );
+        return 'retry';
+      }
       throw error;
     }
     log.info(

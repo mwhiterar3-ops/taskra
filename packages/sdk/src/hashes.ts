@@ -60,6 +60,25 @@ export function rejectionReasonHash(reason: string): Uint8Array {
   return sha256(encoder.encode(normalized));
 }
 
+export const TASK_TRAILER = 'Taskra-Task';
+export const DEVELOPER_TRAILER = 'Taskra-Developer';
+
+/**
+ * The two lines the head commit of a pull request must carry for it to count
+ * as evidence for a task: which task it is for, and which wallet is to be
+ * paid. A commit's message is fixed by its SHA, and the evidence hash commits
+ * to the head SHA, so this statement cannot be added or altered afterwards.
+ */
+export function evidenceTrailers(taskUuid: string, developerWallet: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskUuid)) {
+    throw invalidArgument('task id must be a UUID');
+  }
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(developerWallet)) {
+    throw invalidArgument('developer wallet must be a base58 address');
+  }
+  return `${TASK_TRAILER}: ${taskUuid.toLowerCase()}\n${DEVELOPER_TRAILER}: ${developerWallet}`;
+}
+
 export interface EvidenceHashInput {
   readonly repo: string;
   readonly prNumber: bigint;

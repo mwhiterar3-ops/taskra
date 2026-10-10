@@ -17,20 +17,25 @@ import {
   type TaskraCommitment,
   type TaskState,
   termsMatchTask,
+  TOKEN_PROGRAM_ID,
   uuidFromTaskId,
 } from '@taskra/sdk';
 import { type Queryable, withTransaction } from '@taskra/shared/db';
 import {
-  findTaskraInstruction,
+  type EscrowAddresses,
+  escrowMovements,
+  findTaskInstruction,
   type ObservedTransaction,
   OUTCOME_INSTRUCTIONS,
+  outcomeInvokedByAnotherProgram,
+  SettlementEvidenceError,
+  taskInstructions,
   type TaskraInstruction,
-  tokenDelta,
   TransactionMismatchError,
 } from '../chain/parse.js';
 import { ChainUnavailableError, type TaskSnapshot } from '../chain/reader.js';
 import type { AppDeps } from '../deps.js';
-import { ApiError, conflict } from '../errors.js';
+import { ApiError } from '../errors.js';
 
 export interface TaskRow {
   readonly id: string;
@@ -153,8 +158,8 @@ async function settlePendingTransactions(deps: AppDeps, taskId: string): Promise
     if (next !== null) {
       await deps.pool.query(
         `UPDATE onchain_transactions SET status = $2, updated_at = $3
-          WHERE signature = $1 AND status = 'CONFIRMED'`,
-        [signature, next, deps.now()],
+          WHERE signature = $1 AND task_id = $4 AND status = 'CONFIRMED'`,
+        [signature, next, deps.now(), taskId],
       );
     }
   }
@@ -167,34 +172,66 @@ interface ObservedAmounts {
 }
 
 /**
- * The token movements of an outcome transaction, read from its balance changes.
- * They must add up to exactly what left escrow, or nothing is recorded.
+ * How an outcome instruction divided the task's principal.
+ *
+ * The amounts returned are the task's own: `amount` and `fee_bps` as the
+ * finalized Task account records them, split the way the program splits them.
+ * The transfers the Taskra instruction itself made (`escrowMovements`) are the
+ * evidence that this is what happened, not the source of the numbers: every
+ * transfer must go to the account the instruction named for the party the
+ * terminal state says was paid, the treasury must have received exactly the
+ * task's fee, and the paid party at least its share. If anything does not fit,
+ * this throws and nothing is recorded.
+ *
+ * The program sweeps the whole escrow balance to the paid party, so tokens
+ * that anyone deposited into the escrow are swept along. They were never part
+ * of the task, so they are not counted: otherwise a developer could deposit
+ * and take back any sum in the settling transaction and have it recorded as
+ * earnings.
  */
 export function observedAmounts(
-  transaction: ObservedTransaction,
   instruction: TaskraInstruction,
   account: TaskAccount,
-  escrow: string,
+  addresses: EscrowAddresses,
 ): ObservedAmounts {
+  const movements = escrowMovements(instruction, addresses);
+  if (!movements.closed) {
+    throw new SettlementEvidenceError('the instruction did not close the escrow');
+  }
   const treasury = instruction.accounts['treasury'] ?? null;
   const developerToken = instruction.accounts['developer_token'] ?? null;
   const clientToken = instruction.accounts['client_token'] ?? null;
-
-  let fee = tokenDelta(transaction, treasury);
-  let developer = tokenDelta(transaction, developerToken);
-  const client = tokenDelta(transaction, clientToken);
-  if (treasury !== null && treasury === developerToken) {
-    // One token account is both treasury and payout: split it as the program did.
-    const combined = developer;
-    fee = computeFee(account.amount, account.feeBps);
-    developer = combined - fee;
+  const paidDeveloper = account.state === 'SETTLED';
+  const allowed = new Set(paidDeveloper ? [treasury, developerToken] : [clientToken]);
+  for (const destination of movements.transfers.keys()) {
+    if (!allowed.has(destination)) {
+      throw new SettlementEvidenceError(
+        `the escrow paid an account that ${instruction.name} does not pay for a ${account.state} task`,
+      );
+    }
   }
+  const sent = (to: string | null): bigint =>
+    to === null ? 0n : (movements.transfers.get(to) ?? 0n);
 
-  const left = -tokenDelta(transaction, escrow);
-  if (fee < 0n || developer < 0n || client < 0n || fee + developer + client !== left) {
-    throw new Error(`token movements of ${transaction.signature} do not add up to the escrow`);
+  const expectedFee = computeFee(account.amount, account.feeBps);
+  const net = account.amount - expectedFee;
+  let consistent: boolean;
+  if (!paidDeveloper) {
+    consistent = sent(clientToken) >= account.amount;
+  } else if (treasury !== null && treasury === developerToken) {
+    // One token account is both treasury and payout: it received both transfers.
+    consistent = sent(developerToken) >= account.amount;
+  } else {
+    consistent = sent(treasury) === expectedFee && sent(developerToken) >= net;
   }
-  return { fee, developer, client };
+  if (!consistent) {
+    throw new SettlementEvidenceError(
+      `the escrow transfers of ${instruction.name} do not match a ${account.state} task`,
+    );
+  }
+  return paidDeveloper
+    ? { fee: expectedFee, developer: net, client: 0n }
+    : { fee: 0n, developer: 0n, client: account.amount };
 }
 
 function fromUnix(seconds: bigint): Date | null {
@@ -230,32 +267,49 @@ async function recordSettlement(deps: AppDeps, row: TaskRow): Promise<void> {
     ]),
   ];
 
+  const programId = taskra.programId.toBase58();
+  let wrapped: string | undefined;
   for (const signature of candidates) {
     const transaction = await chain.getTransaction(signature, 'finalized');
+    // A failed transaction changed nothing, whatever it contains.
     if (transaction === null || transaction.error !== null) continue;
-    let instruction: TaskraInstruction;
+    // The outcome instruction of this task, wherever it stands among the
+    // transaction's instructions and whatever else the sender put beside it.
+    let outcomes: TaskraInstruction[];
     try {
-      instruction = findTaskraInstruction(transaction, taskra.programId.toBase58());
+      outcomes = taskInstructions(transaction, programId, row.task_address).filter((candidate) =>
+        OUTCOME_INSTRUCTIONS.includes(candidate.name),
+      );
     } catch (error) {
-      if (error instanceof TransactionMismatchError) continue;
-      throw error;
+      if (!(error instanceof TransactionMismatchError)) throw error;
+      outcomes = [];
     }
-    if (
-      !OUTCOME_INSTRUCTIONS.includes(instruction.name) ||
-      instruction.accounts['task'] !== row.task_address
-    ) {
+    const [instruction] = outcomes;
+    if (instruction === undefined) {
+      if (outcomeInvokedByAnotherProgram(transaction, programId, row.task_address)) {
+        wrapped ??= signature;
+      }
       continue;
     }
+    if (outcomes.length > 1) {
+      // The program lets one outcome instruction succeed per task, ever.
+      throw new SettlementEvidenceError(
+        'a successful transaction carries more than one outcome instruction for the task',
+      );
+    }
 
-    const escrow = findEscrowAddress(taskra.programId, address)[0].toBase58();
-    const amounts = observedAmounts(transaction, instruction, account, escrow);
+    const amounts = observedAmounts(instruction, account, {
+      tokenProgram: TOKEN_PROGRAM_ID.toBase58(),
+      escrow: findEscrowAddress(taskra.programId, address)[0].toBase58(),
+      task: row.task_address,
+      mint: taskra.usdcMint.toBase58(),
+    });
     const now = deps.now();
     await withTransaction(pool, async (client) => {
       await client.query(
         `INSERT INTO onchain_transactions (signature, task_id, instruction, status, slot, block_time)
          VALUES ($1, $2, $3, 'FINALIZED', $4, $5)
-         ON CONFLICT (signature) DO UPDATE SET status = 'FINALIZED', updated_at = $6
-           WHERE onchain_transactions.task_id = EXCLUDED.task_id`,
+         ON CONFLICT (signature, task_id) DO UPDATE SET status = 'FINALIZED', updated_at = $6`,
         [
           signature,
           row.id,
@@ -292,8 +346,23 @@ async function recordSettlement(deps: AppDeps, row: TaskRow): Promise<void> {
     });
     return;
   }
-  // The outcome is final on-chain but its transaction was not among the most
-  // recent ones for this address. Nothing is recorded; the next read retries.
+  if (wrapped !== undefined) {
+    // Not supported: the instruction was invoked by another program, so it is
+    // not a top-level instruction and its transfers are not reported as its
+    // own. Nothing is recorded, and the reason is logged on every read.
+    throw new SettlementEvidenceError(
+      `the task was settled through another program in ${wrapped}; such settlements are not recorded`,
+    );
+  }
+  // The outcome is final on-chain but no transaction that was examined carries
+  // it as a top-level instruction: it is older than the newest signatures of
+  // this address and nobody reported it, or it was made through another program
+  // and the RPC endpoint did not report inner instructions. The two cannot be
+  // told apart from here. Nothing is recorded and the next read retries;
+  // reporting the signature makes it a candidate whatever its age.
+  throw new SettlementEvidenceError(
+    `the task is ${account.state} at finalized commitment but its outcome transaction was not found among ${String(candidates.length)} candidate(s)`,
+  );
 }
 
 export interface Reconciled {
@@ -304,7 +373,7 @@ export interface Reconciled {
   readonly chainAvailable: boolean;
   /**
    * Set when finality bookkeeping failed for a reason other than an RPC outage
-   * (for example token movements that do not add up). Nothing was recorded;
+   * (for example escrow transfers that do not match the task). Nothing was recorded;
    * the caller logs it. The task itself is still served.
    */
   readonly problem: unknown;
@@ -359,14 +428,6 @@ export async function observeTransaction(
   expected?: InstructionName,
 ): Promise<Observation> {
   const { pool, chain, taskra } = deps;
-  const prior = await pool.query<{ task_id: string }>(
-    `SELECT task_id FROM onchain_transactions WHERE signature = $1`,
-    [signature],
-  );
-  if (prior.rows[0] !== undefined && prior.rows[0].task_id !== row.id) {
-    throw conflict('TRANSACTION_MISMATCH', 'This transaction belongs to a different task.');
-  }
-
   let finalized = true;
   let transaction = await chain.getTransaction(signature, 'finalized');
   if (transaction === null) {
@@ -381,17 +442,16 @@ export async function observeTransaction(
     );
   }
 
+  // The transaction may carry instructions for other tasks too; this report is
+  // about the one for this task, and there must be exactly one.
   let instruction: TaskraInstruction;
   try {
-    instruction = findTaskraInstruction(transaction, taskra.programId.toBase58());
+    instruction = findTaskInstruction(transaction, taskra.programId.toBase58(), row.task_address);
   } catch (error) {
     if (error instanceof TransactionMismatchError) {
       throw new ApiError(422, 'TRANSACTION_MISMATCH', error.message);
     }
     throw error;
-  }
-  if (instruction.accounts['task'] !== row.task_address) {
-    throw new ApiError(422, 'TRANSACTION_MISMATCH', 'The transaction is for a different task.');
   }
   if (expected !== undefined && instruction.name !== expected) {
     throw new ApiError(
@@ -412,11 +472,10 @@ export async function observeTransaction(
             (signature, task_id, instruction, status, slot, block_time, error_code, error_name,
              reported_by, first_seen_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-     ON CONFLICT (signature) DO UPDATE
+     ON CONFLICT (signature, task_id) DO UPDATE
        SET status = CASE WHEN onchain_transactions.status IN ('FINALIZED', 'FAILED')
                          THEN onchain_transactions.status ELSE EXCLUDED.status END,
-           updated_at = EXCLUDED.updated_at
-     WHERE onchain_transactions.task_id = EXCLUDED.task_id`,
+           updated_at = EXCLUDED.updated_at`,
     [
       signature,
       row.id,

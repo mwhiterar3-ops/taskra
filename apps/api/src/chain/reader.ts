@@ -13,7 +13,8 @@ import {
   type TaskraConfig,
   TaskraSdkError,
 } from '@taskra/sdk';
-import type { ObservedTransaction, TokenBalanceChange } from './parse.js';
+import bs58 from 'bs58';
+import type { InnerInstruction, ObservedTransaction } from './parse.js';
 
 export interface TaskSnapshot {
   readonly account: TaskAccount;
@@ -140,37 +141,32 @@ export function createChainReader(
           return key.toBase58();
         };
 
-        const post = new Map(
-          (meta.postTokenBalances ?? []).map((balance) => [balance.accountIndex, balance]),
-        );
-        const pre = new Map(
-          (meta.preTokenBalances ?? []).map((balance) => [balance.accountIndex, balance]),
-        );
-        const tokenBalances: TokenBalanceChange[] = [...new Set([...pre.keys(), ...post.keys()])]
-          .sort((left, right) => left - right)
-          .map((index) => {
-            const before = pre.get(index);
-            const after = post.get(index);
-            return {
-              account: address(index),
-              mint: (after ?? before)?.mint ?? '',
-              // A closed token account has no post balance: it holds nothing.
-              pre: BigInt(before?.uiTokenAmount.amount ?? '0'),
-              post: BigInt(after?.uiTokenAmount.amount ?? '0'),
-            };
-          });
+        // Inner instructions, by the index of the top-level instruction that
+        // made them. A node that does not report them leaves every list null.
+        const reported = meta.innerInstructions;
+        const innerOf = (index: number): InnerInstruction[] | null =>
+          reported == null
+            ? null
+            : reported
+                .filter((entry) => entry.index === index)
+                .flatMap((entry) => entry.instructions)
+                .map((instruction) => ({
+                  programId: address(instruction.programIdIndex),
+                  accounts: instruction.accounts.map(address),
+                  data: bs58.decode(instruction.data),
+                }));
 
         return {
           signature,
           slot: response.slot,
           blockTime: response.blockTime ?? null,
           error: meta.err,
-          instructions: transaction.message.compiledInstructions.map((instruction) => ({
+          instructions: transaction.message.compiledInstructions.map((instruction, index) => ({
             programId: address(instruction.programIdIndex),
             accounts: instruction.accountKeyIndexes.map(address),
             data: instruction.data,
+            inner: innerOf(index),
           })),
-          tokenBalances,
         };
       }),
 

@@ -4,8 +4,8 @@ import {
   bytesEqual,
   canonicalRepo,
   findTaskAddress,
-  I64_MAX,
   type InstructionName,
+  MAX_WORK_DURATION,
   normalizeAcceptanceCriteria,
   rejectionReasonHash,
   TASK_STATES,
@@ -15,6 +15,7 @@ import {
   U64_MAX,
 } from '@taskra/sdk';
 import { PublicKey } from '@solana/web3.js';
+import { isRestrictViolation } from '@taskra/shared/db';
 import { z } from 'zod';
 import { findSession, requireSession } from '../auth/routes.js';
 import { hashArgument } from '../chain/parse.js';
@@ -97,11 +98,13 @@ export function registerTaskRoutes(app: FastifyInstance, deps: AppDeps): void {
     if (amount === 0n || amount > U64_MAX) {
       throw new ApiError(400, 'VALIDATION_ERROR', 'amount must be between 1 and 2^64 - 1.');
     }
-    if (workDuration === 0n || workDuration > I64_MAX) {
+    // The program is the authority on this bound (MAX_WORK_DURATION comes from
+    // its IDL); refusing here only saves the client a transaction that would fail.
+    if (workDuration === 0n || workDuration > MAX_WORK_DURATION) {
       throw new ApiError(
         400,
         'VALIDATION_ERROR',
-        'workDuration must be a positive number of seconds.',
+        `workDuration must be between 1 and ${MAX_WORK_DURATION.toString()} seconds (365 days).`,
       );
     }
     const repo = canonicalRepo(body.repo);
@@ -314,14 +317,32 @@ export function registerTaskRoutes(app: FastifyInstance, deps: AppDeps): void {
     );
     const submission = stored.rows[0];
     if (submission === undefined) throw new Error('submission row is missing');
-    if (
-      submission.pr_number !== String(body.prNumber) ||
-      submission.evidence_hash !== toHex(account.evidenceHash)
-    ) {
-      throw conflict(
-        'EVIDENCE_ALREADY_REGISTERED',
-        'This submission is already registered with a different pull request. Resubmit on-chain to change it.',
-      );
+    if (submission.evidence_hash !== toHex(account.evidenceHash)) {
+      throw conflict('STALE_SUBMISSION', 'The on-chain submission changed. Try again.');
+    }
+    let corrected = false;
+    if (submission.pr_number !== String(body.prNumber)) {
+      // Correcting which pull request a submission refers to is safe while
+      // nothing is verified: the on-chain hash commits to the repository, the
+      // number and the head commit, so a number that is not the hashed one can
+      // never verify, and the hashed one is the only number that ever can.
+      // Once a VERIFIED result or an attestation exists the registration is
+      // final. The database decides that, under a lock on the submission row
+      // that the attestation service's VERIFIED record also takes, so the two
+      // cannot interleave (migrations 1760100000000 and 1760300000000).
+      try {
+        await pool.query(`UPDATE submissions SET pr_number = $2 WHERE id = $1`, [
+          submission.id,
+          body.prNumber,
+        ]);
+      } catch (error) {
+        if (!isRestrictViolation(error)) throw error;
+        throw conflict(
+          'EVIDENCE_LOCKED',
+          'This submission has been verified; its pull request can no longer be changed.',
+        );
+      }
+      corrected = true;
     }
     // A finished job that produced no attestation may be run again, for
     // example once the pull request has been merged.
@@ -335,6 +356,16 @@ export function registerTaskRoutes(app: FastifyInstance, deps: AppDeps): void {
                           WHERE a.submission_id = verification_jobs.submission_id)`,
       [submission.id, now],
     );
+    if (corrected) {
+      // Verify the corrected registration from scratch, even if a run for the
+      // old number is in flight: that run's result names the number it used.
+      await pool.query(
+        `UPDATE verification_jobs
+            SET status = 'QUEUED', attempts = 0, run_after = $2, locked_until = NULL, updated_at = $2
+          WHERE submission_id = $1`,
+        [submission.id, now],
+      );
+    }
 
     const { view } = await detail(row);
     return { task: view };

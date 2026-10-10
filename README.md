@@ -13,7 +13,7 @@ evidence, and settlement builds the developer's reputation.
 | Locally functional | Yes. Program, SDK, API, database, attestation service and web app work together on a local validator; `pnpm e2e` drives every journey end to end. |
 | Devnet-tested | **No.** Nothing has been deployed to any public cluster. The deploy script has only been dry-run. |
 | Production-deployed | **No.** |
-| Security | Self-reviewed ([docs/15-SECURITY-AUDIT.md](docs/15-SECURITY-AUDIT.md)). No independent audit. Not for real funds. |
+| Security | Self-reviewed by its authors, in five passes ([docs/15-SECURITY-AUDIT.md](docs/15-SECURITY-AUDIT.md)); the second review found a fund-locking input, unbound evidence and a way to suppress settlement records, since fixed. **No independent audit.** Not for real funds. |
 
 Not yet exercised by anyone: the web app in a real browser with a wallet
 extension, and the GitHub steps against the real GitHub (the suites use a fake).
@@ -85,8 +85,10 @@ DISPUTED ─ resolve_dispute (authority) or expire_dispute (anyone, after timeou
 ```
 
 Every non-terminal state has an exit that opens by a fixed time with no action
-from the other party, so escrow cannot be locked forever
-(`13-DECISIONS.md` §2).
+from the other party. That is true within stated conditions, not unconditionally:
+durations are capped at 365 days by the program, someone has to send the
+permissionless instruction, and a token account frozen by the mint's issuer can
+still block a payout (`13-DECISIONS.md` §2.4).
 
 ## Local development
 
@@ -116,9 +118,9 @@ their `PUBLIC` / `SERVER_ONLY` / `SECRET` labels:
 | `pnpm test` | Unit and integration suites of every package. The API and attester suites run against a real PostgreSQL started for the run. | Node only |
 | `pnpm anchor:test` | Program tests on LiteSVM: every transition, authorization, exclusivity, randomized sequences | Rust, Anchor |
 | `pnpm sdk:validator-loop` | The SDK against a real `solana-test-validator` | Solana CLI |
-| `pnpm e2e` | The whole system against a local validator: seven scenarios, about six minutes | Solana CLI |
-| `scripts/mutation-check.sh` | Eight seeded defects in the program; all must be caught | Clean tree |
-| `scripts/mutation-check-services.sh` | Sixteen seeded defects in the API, attester and web logic; all must be caught | Clean tree |
+| `pnpm e2e` | The whole system against a local validator: nine scenarios, about seven minutes | Solana CLI |
+| `scripts/mutation-check.sh` | Ten seeded defects in the program; all must be caught | Clean tree |
+| `scripts/mutation-check-services.sh` | Thirty-nine seeded defects in the API, attester and web logic; all must be caught | Clean tree |
 | `scripts/test-deploy-guards.sh` | The devnet deploy script refuses unsafe configurations; dry run only | The owner's program keypair (git-ignored; not available in a fresh clone) |
 
 Everything in this table except the last row runs from a fresh clone: the
@@ -202,6 +204,11 @@ Pinned; never "latest". Rationale in `13-DECISIONS.md` §12.
   attestation design).
 - Only public GitHub repositories and merged pull requests count as evidence.
   An unmerged pull request can never be verified (L6).
+- A verified pull request names its task and payee in its final commit, but that
+  is a declaration, not a judgement of the work. If the person who merges is not
+  the client, the client must use the review window (L7).
+- A rejected, verified delivery is paid if the platform authority does not
+  resolve the dispute in time (`13-DECISIONS.md` §17.3).
 - No keeper: expiry instructions are permissionless and someone must send them
   (the web app offers the button to anyone).
 - Task lists come from a cache that is refreshed when a task is read or a

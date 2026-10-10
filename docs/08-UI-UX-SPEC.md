@@ -114,6 +114,13 @@ authorizes nothing.
 Dispute resolution by the platform authority appears on the task page when the
 connected wallet is `platform.authority`.
 
+### Evidence
+
+Before submitting, the developer is shown the two lines the final commit of the
+pull request must end with (`Taskra-Task: …`, `Taskra-Developer: …`), with the
+task id and their own wallet filled in. Without them the pull request cannot be
+verified, however it is merged.
+
 ### Not built
 
 Search beyond a state filter, notifications, editing a draft (create a new

@@ -64,7 +64,7 @@ async function connect(sessionCookie: string): Promise<Started> {
   expect(location.origin + location.pathname).toBe('https://github.com/login/oauth/authorize');
   expect(location.searchParams.get('client_id')).toBe('test-client-id');
   expect(location.searchParams.get('scope')).toBeNull();
-  expect(cookie).toMatchObject({ httpOnly: true, sameSite: 'Lax', path: '/api/v1/github' });
+  expect(cookie).toMatchObject({ httpOnly: true, sameSite: 'Lax', path: '/' });
   const state = location.searchParams.get('state') ?? '';
   expect(cookie?.value).toBe(state);
   return { state, stateCookie: `${STATE_COOKIE}=${state}` };
@@ -179,6 +179,61 @@ describe('linking a GitHub identity', () => {
     const c = await connect(secondSession);
     await callback(c.state, c.stateCookie);
     expect(await linkedLogin(second.address)).toBe('own-account');
+  });
+});
+
+// L-10: a page on a sibling subdomain can set cookies for the parent domain.
+// With a state cookie it could set, it could make a victim's browser finish a
+// flow the attacker started, linking the victim's GitHub account to the
+// attacker's wallet.
+describe('on an https origin', () => {
+  const ORIGIN = 'https://app.taskra.example';
+  const PREFIXED = '__Host-taskra_oauth_state';
+
+  it('uses a state cookie that only this host can set', async () => {
+    const secure = await createHarness({ github: true, fetch: github.fetch, webOrigin: ORIGIN });
+    try {
+      const wallet = createWallet();
+      const started = await secure.get('/api/v1/github/connect', await secure.signIn(wallet));
+      expect(started.statusCode).toBe(302);
+      expect(started.cookies.map((entry) => entry.name)).toEqual([PREFIXED]);
+      const [cookie] = started.cookies;
+      // What the prefix requires of the cookie, or a browser discards it.
+      expect(cookie).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Lax', path: '/' });
+      expect(cookie).not.toHaveProperty('domain');
+      const state = new URL(started.headers.location ?? '').searchParams.get('state') ?? '';
+
+      const finish = (cookieHeader: string) =>
+        secure.app.inject({
+          method: 'GET',
+          url: `/api/v1/github/callback?code=the-code&state=${state}`,
+          headers: { cookie: cookieHeader },
+        });
+      // The name a sibling subdomain could set is not the state cookie.
+      const planted = await finish(`taskra_oauth_state=${state}`);
+      expect(planted.headers.location).toBe(`${ORIGIN}/?github=state_invalid`);
+      const user = await secure.get(`/api/v1/users/${wallet.address}`);
+      expect(user.json<{ github: unknown }>().github).toBeNull();
+    } finally {
+      await secure.close();
+    }
+  });
+
+  it('completes the flow with that cookie', async () => {
+    const secure = await createHarness({ github: true, fetch: github.fetch, webOrigin: ORIGIN });
+    try {
+      const wallet = createWallet();
+      const started = await secure.get('/api/v1/github/connect', await secure.signIn(wallet));
+      const state = new URL(started.headers.location ?? '').searchParams.get('state') ?? '';
+      const response = await secure.app.inject({
+        method: 'GET',
+        url: `/api/v1/github/callback?code=the-code&state=${state}`,
+        headers: { cookie: `${PREFIXED}=${state}` },
+      });
+      expect(response.headers.location).toBe(`${ORIGIN}/profile/${wallet.address}?github=linked`);
+    } finally {
+      await secure.close();
+    }
   });
 });
 

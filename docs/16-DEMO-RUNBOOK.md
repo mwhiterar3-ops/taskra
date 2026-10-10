@@ -32,19 +32,21 @@ Toolchain versions are in `13-DECISIONS.md` §12. `anchor --version` must say
 pnpm e2e
 ```
 
-About six minutes. It builds the program, starts a throwaway validator, a
+About seven minutes. It builds the program, starts a throwaway validator, a
 throwaway PostgreSQL, the API (over HTTP) and the attestation service, and
 drives these scenarios with test wallets. GitHub is replaced by a fake inside
 the harness, so no credentials are needed.
 
 | Scenario | Expected observable outcome |
 |---|---|
-| A. Full lifecycle | `verification is VERIFIED`, `task is UNDER_REVIEW`, then `fee observed on-chain: 2.50 USDC`, `developer observed on-chain: 97.50 USDC`, `reputation: one settled task`; a second approval is `recorded as FAILED` |
+| A. Full lifecycle | `verification is VERIFIED`, `task is UNDER_REVIEW`, then `fee observed on-chain: 2.50 USDC`, `developer observed on-chain: 97.50 USDC` (recorded exactly, although the approval transaction also carries an unrelated one-unit transfer), `reputation: one settled task`; a second approval is `recorded as FAILED` |
 | B. Review expiry | `expire_review is refused before the review deadline`; after the deadline `API found the outcome transaction by itself` with outcome `REVIEW_EXPIRED` |
 | C. Cancellation and bad requests | Unauthorized cancel refused with `Unauthorized`; wrong-task and non-Taskra signatures refused; `client refunded in full`; an unfunded wallet's task `stays a draft` |
 | D. Rejection and dispute | `task is DISPUTED`, the reason is shown, and after the timeout the outcome is `DISPUTE_EXPIRED_FOR_DEVELOPER` because the work was verified |
 | E. Unverifiable evidence | PENDING during a simulated GitHub outage, then `rejected because the pull request is not merged (R4)`; developer dispute; outcome `DISPUTE_EXPIRED_FOR_CLIENT`, `client refunded in full` |
 | F. Resubmission | `the earlier attestation no longer applies`; approving old evidence refused with `EvidenceMismatch`; replayed jobs send nothing; tampered metadata `flagged as unverified` |
+| H. Unrelated pull request | A merged pull request that passes R1–R9 but does not name the task: `rejected for not naming the task (R11)`, `no attestation was requested`; a pull request made for the task is then verified |
+| I. One transaction, two tasks, a deposit | One real transaction deposits 1,000,000 USDC into an escrow, approves that task and cancels another: `two settlements name the one transaction`, `first task: earnings are the task amount less the fee, not the deposit`, `reputation: 97.50 USDC earned, not 1,000,097.50` |
 | G. Real processes | `GET /ready` is ready; the attestation service refuses to start with a key the platform does not name |
 
 The run ends with `END-TO-END RUN PASSED: <n> checks`. Any failed check stops it
@@ -119,9 +121,9 @@ an unverified submission, and the verification panel shows which rule failed.
 | 3 | **Create task and fund 100.00 USDC** | Status: awaiting wallet → submitted → confirmed → **final**; state `OPEN`; Terms "match the on-chain hash" |
 | 4 | Switch wallet to the developer, sign in, open **Profile** → **Connect GitHub** | "Connected as …" |
 | 5 | Open the task → **Accept task** | State `ACCEPTED`; work deadline shown |
-| 6 | On GitHub, open a pull request from the developer's account; have the other account merge it | — |
+| 6 | On GitHub, open a pull request from the developer's account whose **final commit message ends with the two `Taskra-Task:` / `Taskra-Developer:` lines shown on the task page**; have the other account merge it | — |
 | 7 | **Submit evidence**: PR number → **Look up head commit** → **Record evidence on-chain** | State `SUBMITTED`; verification "Pending" |
-| 8 | Wait about 30 s | Verification "Verified", rules R1–R9 ticked, head and merge commit shown, on-chain attestation `FINALIZED`; state `UNDER_REVIEW` |
+| 8 | Wait about 30 s | Verification "Verified", rules R1–R9, R11 and R12 ticked, head and merge commit shown, on-chain attestation `FINALIZED`; state `UNDER_REVIEW` |
 | 9 | Switch to the client → **Approve and pay developer** | After finality: "Finalized: approved — Developer received 97.50 USDC · treasury 2.50 USDC", with a link to the transaction |
 | 10 | Open the developer's profile | Tasks settled 1, total earned 97.50 USDC, the task under "Verified work" |
 

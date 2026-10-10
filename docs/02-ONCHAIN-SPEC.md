@@ -67,7 +67,8 @@ The program must enforce:
 - deadlines are enforced
 - review-window expiry is enforceable
 - funds cannot be redirected to arbitrary accounts
-- escrow cannot be locked indefinitely
+- every non-terminal state has an exit that opens by a fixed time, within the
+  conditions of `13-DECISIONS.md` §2.4 (durations and windows are capped at 365 days)
 - no private key is ever required by the program
 
 ## USDC

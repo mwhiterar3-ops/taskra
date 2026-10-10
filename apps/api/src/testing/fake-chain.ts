@@ -4,7 +4,7 @@
 
 import type { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import type { PlatformAccount, TaskAccount, TaskraCommitment } from '@taskra/sdk';
-import type { ObservedTransaction, TokenBalanceChange } from '../chain/parse.js';
+import type { InnerInstruction, ObservedTransaction } from '../chain/parse.js';
 import {
   type ChainReader,
   ChainUnavailableError,
@@ -26,7 +26,10 @@ export interface TransactionFixture {
   readonly signature: string;
   readonly instructions: readonly TransactionInstruction[];
   readonly error?: unknown;
-  readonly tokenBalances?: readonly TokenBalanceChange[];
+  /** Inner instructions by the index of the top-level instruction that made them. */
+  readonly inner?: Readonly<Record<number, readonly InnerInstruction[]>>;
+  /** Models an RPC node that does not report inner instructions at all. */
+  readonly innerMissing?: boolean;
 }
 
 export class FakeChain implements ChainReader {
@@ -64,12 +67,12 @@ export class FakeChain implements ChainReader {
         slot: this.slot,
         blockTime: 1_760_000_000 + this.slot,
         error: fixture.error ?? null,
-        instructions: fixture.instructions.map((instruction) => ({
+        instructions: fixture.instructions.map((instruction, index) => ({
           programId: instruction.programId.toBase58(),
           accounts: instruction.keys.map((key) => key.pubkey.toBase58()),
           data: Uint8Array.from(instruction.data),
+          inner: fixture.innerMissing === true ? null : (fixture.inner?.[index] ?? []),
         })),
-        tokenBalances: fixture.tokenBalances ?? [],
       },
     });
   }

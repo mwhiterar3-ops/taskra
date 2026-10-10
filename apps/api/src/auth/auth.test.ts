@@ -172,6 +172,29 @@ describe('sign-in', () => {
   });
 });
 
+describe('on an https deployment', () => {
+  it('sets the session cookie Secure even when NODE_ENV is not production', async () => {
+    const deployed = await createHarness({ webOrigin: 'https://app.taskra.example' });
+    try {
+      expect(deployed.deps.config.NODE_ENV).toBe('test');
+      const wallet = createWallet();
+      const challenge = await deployed.post('/api/v1/auth/challenge', { wallet: wallet.address });
+      const { nonce, message } = challenge.json<Challenge>();
+      expect(message.split('\n')[0]).toBe(
+        'app.taskra.example wants you to sign in with your Solana account:',
+      );
+      const verified = await deployed.post('/api/v1/auth/verify', {
+        nonce,
+        signature: wallet.signMessage(message),
+      });
+      const cookie = verified.cookies.find((entry) => entry.name === SESSION_COOKIE);
+      expect(cookie).toMatchObject({ secure: true, httpOnly: true, sameSite: 'Strict' });
+    } finally {
+      await deployed.close();
+    }
+  });
+});
+
 describe('sessions', () => {
   it('expire after their lifetime', async () => {
     const cookie = await harness.signIn(createWallet());

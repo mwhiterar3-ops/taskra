@@ -16,8 +16,8 @@ The database is never authoritative for money or task state
 | Data | Authority | In the database |
 |---|---|---|
 | Task existence after funding, parties, amount, fee, state, outcome, deadlines, nonce, hashes, attestation | On-chain Task account | `tasks.chain_*`: a cache tagged with the slot and commitment it was read at. Rewritten from the chain on every read of a task. |
-| Token movements | Solana | `settlements`: the movements read from one **finalized** transaction. Never a balance. |
-| Whether a transaction happened | Solana | `onchain_transactions`: an observation keyed by signature, with its finality. |
+| How a task's escrow was divided | Solana | `settlements`: the task's amount and fee, split as the program splits them, recorded only when a **finalized** outcome instruction's own escrow transfers bear it out (`13-DECISIONS.md` §17.4). Never a balance, and never a sum of transfers. |
+| Whether a transaction happened | Solana | `onchain_transactions`: an observation keyed by signature and task, with its finality. |
 | Title, description, repository, acceptance criteria, work duration, amount of a draft | Database | `tasks`, bound to the chain by `terms_hash`. Immutable after insert. |
 | Wallet sessions, GitHub identity links | Database | `sessions`, `github_accounts`. |
 | Pull-request claims, verification runs, attestation operations, rejection reason text | Database | `submissions`, `verification_results`, `attestations`, `rejection_reasons`. The chain holds only hashes. |
@@ -97,19 +97,24 @@ Indexes: `client_wallet`, `chain_developer`, `(chain_state, created_at DESC)`.
 The API role may `UPDATE` only the `chain_*` columns.
 
 ### onchain_transactions
-`signature` **PK**, `task_id` **FK → tasks**, `instruction`, `status`
+**PK** `(signature, task_id)`, `task_id` **FK → tasks**, `instruction`, `status`
 (`CONFIRMED` | `FINALIZED` | `FAILED` | `DROPPED`), `slot`, `block_time`,
 `error_code`, `error_name`, `reported_by` **FK → wallets**, `first_seen_at`,
 `updated_at`. Indexes: `(task_id, first_seen_at)`; partial on
-`status = 'CONFIRMED'`.
+`status = 'CONFIRMED'`. A transaction can carry Taskra instructions for
+several tasks; it has one row for each task it concerns, naming that task's
+instruction.
 
 ### settlements
-`task_id` **PK, FK → tasks**, `signature` **UNIQUE, FK →
+`task_id` **PK, FK → tasks**, `(signature, task_id)` **FK →
 onchain_transactions**, `state` (`SETTLED` | `REFUNDED` | `CANCELLED`),
 `outcome`, `client_wallet`, `developer_wallet`, `amount`, `fee_amount`,
 `developer_amount`, `client_amount`, `disputed`, `accepted_at`, `closed_at`,
 `slot`, `recorded_at`. Indexes: `developer_wallet`, `client_wallet`.
 Written only from a transaction and a Task account both read at `finalized`.
+`fee_amount`, `developer_amount` and `client_amount` always add up to `amount`
+(`CHECK settlements_amounts_add_up`): tokens swept out of the escrow beyond the
+task amount are not recorded and could not be stored.
 
 ### rejection_reasons
 `task_id` **PK, FK → tasks**, `reason_hash`, `reason`, `author_wallet`
@@ -119,7 +124,9 @@ Written only from a transaction and a Task account both read at `finalized`.
 ### submissions
 `id` **PK**, `task_id` **FK → tasks**, `submission_nonce`, `evidence_hash`,
 `pr_number`, `submitter_wallet` **FK → wallets**, `created_at`.
-**UNIQUE** `(task_id, submission_nonce)`.
+**UNIQUE** `(task_id, submission_nonce)`. A trigger allows exactly one kind of
+update: correcting `pr_number`, and only while the submission has no VERIFIED
+result and no attestation. Every other column is immutable.
 
 ### verification_jobs
 `submission_id` **PK, FK → submissions**, `status` (`QUEUED` | `RUNNING` |
@@ -139,6 +146,9 @@ evaluated and a reason), `ruleset_version`, `verifier_version`,
 - **Append-only**: a trigger rejects every `UPDATE` and `DELETE`, and no role
   is granted either.
 - Partial **UNIQUE** index: at most one `VERIFIED` row per submission.
+- An insert trigger locks the submission row and refuses a `VERIFIED` row whose
+  `pr_number` is not the one registered at that moment
+  (`13-DECISIONS.md` §17.5).
 - `CHECK`: a `VERIFIED` row must contain `head_sha`, `merge_commit_sha`, both
   GitHub identities, the merge time, the repository creation time, and a
   recomputed hash equal to the on-chain hash.
@@ -166,9 +176,10 @@ total_paid)`, both over `settlements`.
 
 | Event | Guard |
 |---|---|
-| Same transaction reported twice, or reported while being reconciled | `onchain_transactions.signature` PK; inserts use `ON CONFLICT DO NOTHING` |
+| Same transaction reported twice for a task, or reported while being reconciled | `onchain_transactions (signature, task_id)` PK; inserts use `ON CONFLICT` |
 | Two outcomes recorded for one task | `settlements.task_id` PK |
-| One transaction recorded as two settlements | `settlements.signature` UNIQUE |
+| A settlement naming a transaction that is not on record for its task | `settlements (signature, task_id)` FK. One transaction may settle several tasks, once each |
+| A correction of `pr_number` racing a `VERIFIED` result | Inserting the `VERIFIED` result rewrites the submission row, so the two are serialized on it and the later one is refused, at any isolation level |
 | Same on-chain submission registered twice | `submissions (task_id, submission_nonce)` UNIQUE |
 | Two workers verifying one submission | Jobs are claimed with `FOR UPDATE SKIP LOCKED` and a lease |
 | Two `VERIFIED` results for one submission | Partial unique index |
@@ -185,7 +196,7 @@ Isolation is by table privilege between two group roles:
 
 | Role | May write | May only read | No access |
 |---|---|---|---|
-| `taskra_api` (request handling) | `wallets`, `auth_nonces`, `sessions`, `github_oauth_states`, `github_accounts`, `tasks` (insert; update of `chain_*` only), `onchain_transactions`, `settlements` (insert), `rejection_reasons` (insert), `submissions` (insert), `verification_jobs` | `verification_results`, `attestations`, reputation views | — |
+| `taskra_api` (request handling) | `wallets`, `auth_nonces`, `sessions`, `github_oauth_states`, `github_accounts`, `tasks` (insert; update of `chain_*` only), `onchain_transactions`, `settlements` (insert), `rejection_reasons` (insert), `submissions` (insert; update of `pr_number` only), `verification_jobs` | `verification_results`, `attestations`, reputation views | — |
 | `taskra_attester` (attestation service) | `verification_jobs` (update), `verification_results` (insert), `attestations` (insert, update) | `tasks`, `submissions`, `github_accounts` | everything else, including sessions |
 
 Each service runs `SET ROLE` to its role on every connection. In development one
@@ -194,10 +205,41 @@ deployment each service must connect with its own login that is a member of only
 its own role**, so that a compromised API cannot write a verification result or
 an attestation record. Privileges are a second line of defence, not the first:
 the attestation service re-derives every fact from GitHub and from the chain
-before signing (`06-GITHUB-VERIFICATION-SPEC.md`).
+before it records a result (`06-GITHUB-VERIFICATION-SPEC.md`).
+
+`SET ROLE` is a habit of the code, not a boundary: a connection can leave its
+role again (`SET ROLE NONE`), and what it can do then is decided by its login.
+The attestation service signs for the attestation records it finds; it does not
+verify a second time before signing. With the migration login, a connection
+that had dropped to `taskra_api` inserts a VERIFIED result and an attestation
+record (`db.test.ts` executes this).
+
+So on a deployment the API inspects its own login before it listens and
+refuses to run (exit status 1) if the login is a superuser, may create roles,
+owns tables of the schema, or is a member of `taskra_attester`, directly or
+through another role; and, whatever its name and memberships, if any role it is
+or can become may insert a verification result or insert or update an
+attestation record (`apps/api/src/startup.ts`). If the login cannot be
+inspected (no connection, no schema) the API does not start either.
+
+A deployment is any one of: a web origin that is not a loopback address; an
+`API_HOST` that is not a loopback interface; `NODE_ENV=production`. No setting
+turns the check off. It is skipped only for a development process that listens
+on loopback for a loopback web origin, where one login serves the migrations
+and every process.
+
+What this does not cover: the attestation service does not inspect its own
+login; nothing is checked about who else holds that login's password; and a
+login that is accepted at startup can be given more privileges afterwards.
 
 ## 7. Migrations
 
+- Migrations: `1760000000000_initial-schema`, then
+  `1760100000000_evidence-correction` (the `submissions` correction rule),
+  `1760200000000_transactions-per-task` (one transaction, several tasks),
+  `1760300000000_verified-result-matches-registration` (a VERIFIED result only
+  for the registered number) and `1760400000000_settlement-amounts-add-up` (a
+  settlement divides the task amount and nothing else).
 - `pnpm db:migrate` applies pending migrations; it needs a login that can create
   roles (the docker-compose user can).
 - Migrations are forward-only in any environment holding data. The `Down`

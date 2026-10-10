@@ -23,9 +23,9 @@ Never expose server variables through frontend build variables.
 | Variable | Label | Description |
 |---|---|---|
 | `NODE_ENV` | SERVER_ONLY | `development`, `test` or `production`. |
-| `API_HOST` | SERVER_ONLY | Interface the API listens on. |
+| `API_HOST` | SERVER_ONLY | Interface the API listens on. Anything but a loopback interface makes the API treat itself as deployed: no attester key in its environment, and a confined database login (`04-DATABASE-SPEC.md` §6). |
 | `API_PORT` | SERVER_ONLY | Port the API listens on (1–65535). |
-| `WEB_ORIGIN` | SERVER_ONLY | Origin of the web app, used for CORS. |
+| `WEB_ORIGIN` | SERVER_ONLY | Origin of the web app: the only origin CORS and state-changing requests are accepted from. Must be https unless it is a loopback address; the session cookie is `Secure` exactly when it is https. |
 
 ### Blockchain
 
@@ -77,15 +77,21 @@ a `SECRET`.
 
 This is the attester keypair approved in `docs/13-DECISIONS.md` §7.4, the only
 privileged backend signing key Taskra has. It is read **only** by
-`apps/attester`; the API's configuration does not load it even when it is
-present in the environment, and it must not be given to the API host or the web
-app. It must be a devnet/test key during development. Its public key must equal
+`apps/attester`. The API never loads it, and **refuses to start** if it is
+present in its environment whenever `WEB_ORIGIN` is not a loopback address or
+`NODE_ENV` is `production`; in local development it removes it from its own
+process. It must not be given to the API host or the web app. It must be a devnet/test key during development. Its public key must equal
 `platform.attester`, or the service refuses to start.
 
 In a deployment the attestation service has its own environment containing
 `NODE_ENV`, `SOLANA_NETWORK`, `SOLANA_RPC_URL`, `TASKRA_PROGRAM_ID`, `USDC_MINT`,
 its own `DATABASE_URL` (a login that is a member of `taskra_attester` only),
 `ATTESTER_SECRET_KEY`, and optionally the GitHub client id and secret.
+
+The API's `DATABASE_URL` must name a login that is a member of `taskra_api`
+only. On a deployment the API refuses to start with a superuser, the migration
+login, or a login that is a member of `taskra_attester`
+(`04-DATABASE-SPEC.md` §6).
 
 ### Tests
 

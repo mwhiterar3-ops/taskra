@@ -130,8 +130,11 @@ export async function verificationView(db: Queryable, taskId: string) {
             a.last_error AS attestation_error
        FROM submissions s
        LEFT JOIN verification_jobs j ON j.submission_id = s.id
+       -- Only a result for the number that is registered now: after a
+       -- correction, a run for the old number says nothing about the new one.
        LEFT JOIN LATERAL (SELECT * FROM verification_results v
-                           WHERE v.submission_id = s.id ORDER BY v.id DESC LIMIT 1) r ON true
+                           WHERE v.submission_id = s.id AND v.pr_number = s.pr_number
+                           ORDER BY v.id DESC LIMIT 1) r ON true
        LEFT JOIN attestations a ON a.submission_id = s.id
       WHERE s.task_id = $1
       ORDER BY s.submission_nonce DESC`,

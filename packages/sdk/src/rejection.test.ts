@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { toHex } from './bytes.js';
 import { TaskraSdkError } from './errors.js';
-import { rejectionReasonHash, termsHash, termsMatchTask } from './hashes.js';
+import { evidenceTrailers, rejectionReasonHash, termsHash, termsMatchTask } from './hashes.js';
+
+describe('evidenceTrailers', () => {
+  const WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  it('names the task (lower-cased) and the wallet (as given) on two lines', () => {
+    expect(evidenceTrailers('123E4567-e89b-12d3-a456-426614174000', WALLET)).toBe(
+      `Taskra-Task: 123e4567-e89b-12d3-a456-426614174000\nTaskra-Developer: ${WALLET}`,
+    );
+  });
+  it('refuses anything that is not a task UUID and a wallet address', () => {
+    expect(() => evidenceTrailers('not-a-uuid', WALLET)).toThrow(TaskraSdkError);
+    expect(() => evidenceTrailers('123e4567-e89b-12d3-a456-426614174000', 'x\ny')).toThrow(
+      TaskraSdkError,
+    );
+  });
+});
 
 describe('termsMatchTask', () => {
   const metadata = {

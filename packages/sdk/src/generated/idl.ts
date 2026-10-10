@@ -1170,7 +1170,7 @@ export const IDL = {
     {
       code: 6001,
       name: 'InvalidWindow',
-      msg: 'Time windows must be positive',
+      msg: 'Time windows must be positive and at most 365 days',
     },
     {
       code: 6002,
@@ -1190,7 +1190,7 @@ export const IDL = {
     {
       code: 6005,
       name: 'InvalidWorkDuration',
-      msg: 'Work duration must be greater than zero',
+      msg: 'Work duration must be positive and at most 365 days',
     },
     {
       code: 6006,
@@ -1606,6 +1606,27 @@ export const IDL = {
       name: 'ESCROW_SEED',
       type: 'bytes',
       value: '[101, 115, 99, 114, 111, 119]',
+    },
+    {
+      name: 'MAX_WINDOW',
+      docs: ['Longest value of each platform time window: 365 days.'],
+      type: 'i64',
+      value: '31536000',
+    },
+    {
+      name: 'MAX_WORK_DURATION',
+      docs: [
+        'Longest `work_duration` a task may be created with: 365 days.',
+        '',
+        'Together with `MAX_WINDOW` this bounds every deadline the program computes',
+        'to at most five years after the transaction that sets it, so the checked',
+        'additions in `accept_task`, `submit_work`, `record_attestation` and the',
+        'dispute instructions cannot overflow for any clock value a cluster can',
+        'reach, and every deadline is reachable. Without a bound, a duration near',
+        '`i64::MAX` let a task be accepted but never submitted, cancelled or refunded.',
+      ],
+      type: 'i64',
+      value: '31536000',
     },
     {
       name: 'PLATFORM_SEED',

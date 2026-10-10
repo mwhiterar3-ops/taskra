@@ -1,5 +1,5 @@
 use crate::{
-    constants::{BPS_DENOMINATOR, PLATFORM_SEED},
+    constants::{BPS_DENOMINATOR, MAX_WINDOW, PLATFORM_SEED},
     error::TaskraError,
     program::Taskra,
     state::Platform,
@@ -51,10 +51,16 @@ pub fn initialize_platform(
     args: InitializePlatformArgs,
 ) -> Result<()> {
     require!(args.fee_bps <= BPS_DENOMINATOR, TaskraError::InvalidFeeBps);
-    require!(
-        args.review_window > 0 && args.verification_grace > 0 && args.dispute_timeout > 0,
-        TaskraError::InvalidWindow
-    );
+    for window in [
+        args.review_window,
+        args.verification_grace,
+        args.dispute_timeout,
+    ] {
+        require!(
+            window > 0 && window <= MAX_WINDOW,
+            TaskraError::InvalidWindow
+        );
+    }
     require_keys_separate(
         &args.authority,
         &args.attester,

@@ -43,6 +43,8 @@ pull request from GitHub and attests only if all of the following hold:
 6. `merged_by` differs from the PR author. A self-merge is REJECTED.
 7. Merge timestamp is after task acceptance.
 8. Merge timestamp is at or before the work deadline.
+11. The message of the pull request's head commit names this task (`Taskra-Task: <uuid>`) and nothing else as its task.
+12. The same message names the task's on-chain developer wallet (`Taskra-Developer: <address>`) and no other.
 9. The evidence hash recomputed from GitHub's own data — the task's repository, the PR number and the merged PR's final head SHA — equals the hash recorded on the Task account. The verifier never trusts a hash or head SHA supplied in a request.
 10. Verification result is persisted with an auditable reason per rule.
 
@@ -102,7 +104,7 @@ code that can load the attester key.
 2. Read the Task account at **`finalized`**. A submission that is only
    confirmed is `PENDING`.
 3. Preconditions, before GitHub is contacted:
-   - **P1** the stored repository, acceptance criteria, duration and amount hash
+   - **P1** the Task account's own `task_id` is the id of the stored task record, and the stored repository, acceptance criteria, duration and amount hash
      to the on-chain `terms_hash` (so the repository cannot be swapped in the
      database);
    - **P2** this is the task's current submission (same nonce and hash) and the
@@ -111,6 +113,9 @@ code that can load the attester key.
 4. Fetch the pull request and evaluate R1–R9 (`13-DECISIONS.md` §10.1). The
    evidence hash is recomputed from the task's repository, the pull-request
    number and GitHub's own head SHA.
+5. Fetch the head commit by that SHA (`GET /repos/{repo}/commits/{sha}`) and
+   evaluate R11 and R12 on its message (`13-DECISIONS.md` §17.2). An answer for
+   a different SHA is treated as no answer.
 5. Append one `verification_results` row: status, every rule with its reason,
    `head_sha`, `merge_commit_sha`, author, `merged_by`, merge time, repository
    creation time, both hashes, the rule-set and verifier versions, the attester
@@ -122,7 +127,9 @@ code that can load the attester key.
 
 | Situation | Result |
 |---|---|
-| All of R1–R9 hold | `VERIFIED` → one attestation |
+| All of R1–R9, R11 and R12 hold | `VERIFIED` → one attestation |
+| A merged pull request that does not name the task and the developer wallet in its head commit (an unrelated pull request) | `REJECTED` on R11 and/or R12 |
+| The head commit names another task, two tasks, another wallet or two wallets | `REJECTED` on R11 or R12 |
 | Unmerged, self-merged, wrong author, wrong repository, merged outside the window | `REJECTED`, with the failed rules |
 | New commit or force-push after the hash was submitted | `REJECTED` on R9; the developer resubmits the new hash on-chain |
 | Developer resubmitted (new nonce) | The older submission is `REJECTED` on P2; it can never be attested |
@@ -148,8 +155,9 @@ merged). Results are append-only, so every run stays in the audit trail.
 | Signing or delivery failures? | The signature is stored **before** the transaction is broadcast. Until the attestation is visible on the finalized Task account the row stays `SENT`; an unknown transaction is re-signed with a fresh blockhash after 90 s, at most 5 times; an RPC refusal is kept and retried. The row becomes `FAILED` (with a reason) when the submission is no longer current, the deadline has passed, or the program refused the key. A `FAILED` attestation moves no funds; the developer-dispute path still applies. |
 | Wrong key configured? | The service refuses to start unless its key equals `platform.attester`. |
 | Compromised attester key? | `13-DECISIONS.md` §7.5: the attacker can start review windows, nothing else. Response: the platform authority runs `rotate_keys` with a new attester (the old key stops working immediately), the new key is placed in the service's secret store, and the service is restarted. Attestations already recorded stay valid and should be reviewed against `verification_results`. |
-| Compromised API or database, key intact? | A forged job cannot produce an attestation the facts do not support. A database writer could link a different GitHub account to a developer's wallet (rule 5 trusts that link), which is why the attestation service should connect with its own database login and why the database is not exposed to the API host's other tenants. |
+| Compromised API or database, key intact? | A forged job cannot produce an attestation the facts do not support. A database writer can still link a different GitHub account to a wallet, and rule 5 trusts that link; but rule 12 does not: the pull request's own head commit must name the wallet to be paid, and only someone who can push to that pull request can write it. A forged link alone no longer gets another person's pull request attested (tested). |
 
-Remaining trust: the attestation service trusts the `github_accounts` link in
-the database and trusts GitHub's API responses. It does not trust the API
+Remaining trust: the attestation service trusts GitHub's API responses, and
+trusts the `github_accounts` link only in combination with the wallet named in
+the head commit. It does not trust the API
 process, request bodies, or any hash or SHA supplied by a user.

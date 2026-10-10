@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { discardForeignSecrets, loadApiConfig } from './config.js';
+import { discardForeignSecrets, loadApiConfig, servedOverHttps } from './config.js';
 import { createHarness, createWallet, type Harness, WEB_ORIGIN } from './testing/harness.js';
 
 let harness: Harness;
@@ -151,6 +151,37 @@ describe('API config', () => {
       loadApiConfig({ ...env, NODE_ENV: 'production', ATTESTER_SECRET_KEY: key }),
     ).toThrow(/ATTESTER_SECRET_KEY: must not be present in the API environment/);
     expect(() => loadApiConfig({ ...env, NODE_ENV: 'production' })).not.toThrow();
+  });
+
+  it('refuses the attester key on any deployed origin, whatever NODE_ENV says', () => {
+    const key = JSON.stringify(Array.from({ length: 64 }, () => 1));
+    for (const NODE_ENV of ['development', 'test', 'production']) {
+      expect(() =>
+        loadApiConfig({
+          ...env,
+          NODE_ENV,
+          WEB_ORIGIN: 'https://app.taskra.example',
+          ATTESTER_SECRET_KEY: key,
+        }),
+      ).toThrow(/ATTESTER_SECRET_KEY: must not be present/);
+    }
+    // On this machine, in development, one .env serves every process.
+    expect(() => loadApiConfig({ ...env, ATTESTER_SECRET_KEY: key })).not.toThrow();
+  });
+
+  it('refuses a deployed web origin that is not https, whatever NODE_ENV says', () => {
+    for (const NODE_ENV of ['development', 'test', 'production']) {
+      expect(() =>
+        loadApiConfig({ ...env, NODE_ENV, WEB_ORIGIN: 'http://app.taskra.example' }),
+      ).toThrow(/WEB_ORIGIN: must use https unless it is a loopback address/);
+    }
+    expect(() => loadApiConfig({ ...env, WEB_ORIGIN: 'https://app.taskra.example' })).not.toThrow();
+    expect(() => loadApiConfig({ ...env, WEB_ORIGIN: 'http://127.0.0.1:3000' })).not.toThrow();
+  });
+
+  it('marks cookies Secure exactly when the web origin is https', () => {
+    expect(servedOverHttps({ WEB_ORIGIN: 'https://app.taskra.example' })).toBe(true);
+    expect(servedOverHttps({ WEB_ORIGIN: 'http://localhost:3000' })).toBe(false);
   });
 
   it('removes the attester key from the process environment in development', () => {

@@ -2,18 +2,28 @@
 
 import { toHex } from '@taskra/sdk';
 import { describe, expect, it } from 'vitest';
-import type { GithubOutcome, PullRequest, Repository } from './github.js';
-import { checkPreconditions, evaluateEvidence, type RuleResult, type Verdict } from './rules.js';
+import type { Commit, GithubOutcome, PullRequest, Repository } from './github.js';
+import {
+  checkPreconditions,
+  commitTrailers,
+  evaluateEvidence,
+  requiredTrailers,
+  type RuleResult,
+  type Verdict,
+} from './rules.js';
 import { notFound, ok, unavailable } from './testing/fakes.js';
 import {
   ACCEPTED_AT,
+  DEVELOPER,
   DEVELOPER_GITHUB_ID,
   HEAD_SHA,
+  headCommit,
   iso,
   mergedPullRequest,
   PR_NUMBER,
   REPO,
   submittedTask,
+  TASK_ID,
   VERIFICATION_DEADLINE,
   WORK_DEADLINE,
 } from './testing/fixtures.js';
@@ -30,6 +40,7 @@ function evaluate(
   options: {
     repository?: GithubOutcome<Repository> | null;
     developerGithubId?: bigint | null;
+    headCommit?: GithubOutcome<Commit> | null;
   } = {},
 ): Verdict {
   return evaluateEvidence(
@@ -43,6 +54,9 @@ function evaluate(
           : options.developerGithubId,
       pullRequest,
       repository: options.repository ?? null,
+      taskId: TASK_ID,
+      developerWallet: DEVELOPER.toBase58(),
+      headCommit: options.headCommit === undefined ? ok(headCommit()) : options.headCommit,
     },
     [],
   );
@@ -53,7 +67,7 @@ function failed(verdict: Verdict): string[] {
 }
 
 describe('evaluateEvidence', () => {
-  it('is VERIFIED when R1–R9 all hold', () => {
+  it('is VERIFIED when R1–R9, R11 and R12 all hold', () => {
     const verdict = evaluate(ok(mergedPullRequest()));
     expect(verdict.status).toBe('VERIFIED');
     expect(verdict.rules.map((rule) => rule.rule)).toEqual([
@@ -66,6 +80,8 @@ describe('evaluateEvidence', () => {
       'R7',
       'R8',
       'R9',
+      'R11',
+      'R12',
     ]);
     expect(verdict.rules.every((rule) => rule.passed === true)).toBe(true);
     expect(verdict.recomputedHash).toBe(toHex(task.evidenceHash));
@@ -129,6 +145,9 @@ describe('evaluateEvidence', () => {
         developerGithubId: BigInt(DEVELOPER_GITHUB_ID),
         pullRequest: ok(mergedPullRequest()),
         repository: null,
+        taskId: TASK_ID,
+        developerWallet: DEVELOPER.toBase58(),
+        headCommit: ok(headCommit()),
       },
       [],
     );
@@ -147,6 +166,107 @@ describe('evaluateEvidence', () => {
     const verdict = evaluate(ok(mergedPullRequest({ merged: false, mergedAt: null })));
     const unevaluated = verdict.rules.filter((rule) => rule.passed === null);
     expect(unevaluated.map((rule) => rule.rule)).toEqual(['R6', 'R7', 'R8']);
+  });
+
+  // M-01 of the security review: before R11 and R12 any pull request by the
+  // developer, merged by someone else in the right repository inside the work
+  // window, was VERIFIED, whatever it was about.
+  describe('R11 and R12: the pull request must be made for this task and this wallet', () => {
+    const commit = (message: string) => ok({ sha: HEAD_SHA, message });
+    const wallet = DEVELOPER.toBase58();
+    const OTHER_TASK = '99999999-9999-4999-8999-999999999999';
+    const OTHER_WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+
+    it('rejects an unrelated merged pull request that satisfies every other rule', () => {
+      const verdict = evaluate(ok(mergedPullRequest()), {
+        headCommit: commit('Fix a typo in the README'),
+      });
+      expect(verdict.status).toBe('REJECTED');
+      expect(failed(verdict)).toEqual(['R11', 'R12']);
+      // Everything the old rule set checked still passes: this is the gap that was closed.
+      const before = verdict.rules.filter((rule) => /^R[1-9]$/.test(rule.rule));
+      expect(before.every((rule) => rule.passed === true)).toBe(true);
+    });
+
+    it.each([
+      ['made for a different task', requiredTrailers(OTHER_TASK, wallet), ['R11']],
+      [
+        'naming two tasks, this one among them',
+        `${requiredTrailers(TASK_ID, wallet)}\nTaskra-Task: ${OTHER_TASK}`,
+        ['R11'],
+      ],
+      ['paying a different wallet', requiredTrailers(TASK_ID, OTHER_WALLET), ['R12']],
+      [
+        'naming two wallets, the developer among them',
+        `${requiredTrailers(TASK_ID, wallet)}\nTaskra-Developer: ${OTHER_WALLET}`,
+        ['R12'],
+      ],
+      ['with the task named but no wallet', `Taskra-Task: ${TASK_ID}`, ['R12']],
+      ['with the wallet named but no task', `Taskra-Developer: ${wallet}`, ['R11']],
+      [
+        'that only mentions the reference inside a sentence',
+        `Work for Taskra-Task: ${TASK_ID} and Taskra-Developer: ${wallet} as discussed`,
+        ['R11', 'R12'],
+      ],
+      [
+        'whose wallet differs only in letter case',
+        requiredTrailers(TASK_ID, wallet.toLowerCase()),
+        ['R12'],
+      ],
+    ])('rejects a pull request %s', (_, message, expected) => {
+      const verdict = evaluate(ok(mergedPullRequest()), {
+        headCommit: commit(`Subject\n\n${message}`),
+      });
+      expect(verdict.status).toBe('REJECTED');
+      expect(failed(verdict)).toEqual(expected);
+    });
+
+    it.each([
+      [
+        'Windows line endings',
+        `Subject\r\n\r\n${requiredTrailers(TASK_ID, wallet).replace('\n', '\r\n')}\r\n`,
+      ],
+      [
+        'an upper-case task id and key',
+        `Subject\n\nTASKRA-TASK: ${TASK_ID.toUpperCase()}\nTaskra-Developer: ${wallet}`,
+      ],
+      [
+        'trailing spaces and other trailers',
+        `Subject\n\nSigned-off-by: A <a@example.com>\nTaskra-Task:   ${TASK_ID}  \nTaskra-Developer:\t${wallet}\n`,
+      ],
+      [
+        'the same lines repeated',
+        `${requiredTrailers(TASK_ID, wallet)}\n${requiredTrailers(TASK_ID, wallet)}`,
+      ],
+    ])('accepts %s', (_, message) => {
+      expect(evaluate(ok(mergedPullRequest()), { headCommit: commit(message) }).status).toBe(
+        'VERIFIED',
+      );
+    });
+
+    it('rejects when GitHub does not have the head commit', () => {
+      const verdict = evaluate(ok(mergedPullRequest()), { headCommit: notFound() });
+      expect(verdict.status).toBe('REJECTED');
+      expect(failed(verdict)).toEqual(['R11']);
+    });
+
+    it.each([
+      ['GitHub cannot return the head commit', unavailable('GitHub answered 502')],
+      ['the head commit was never read', null],
+    ])('is PENDING, not a verdict, when %s', (_, outcome) => {
+      const verdict = evaluate(ok(mergedPullRequest()), { headCommit: outcome });
+      expect(verdict.status).toBe('PENDING');
+    });
+
+    it('reads trailers line by line', () => {
+      expect(
+        commitTrailers(`a\nTaskra-Task: X1\nTaskra-task: x1\nTaskra-Developer: Abc\n`),
+      ).toEqual({
+        tasks: ['x1'],
+        developers: ['Abc'],
+      });
+      expect(commitTrailers('nothing here')).toEqual({ tasks: [], developers: [] });
+    });
   });
 
   describe('R10: GitHub failures are PENDING, never a verdict', () => {
@@ -187,7 +307,13 @@ describe('evaluateEvidence', () => {
 });
 
 describe('checkPreconditions', () => {
-  const base = { task, chainTime: ACCEPTED_AT + 2_000n, termsMatch: true, submission };
+  const base = {
+    task,
+    chainTime: ACCEPTED_AT + 2_000n,
+    taskIdMatches: true,
+    termsMatch: true,
+    submission,
+  };
   const reasons = (rules: readonly RuleResult[]) =>
     rules.filter((rule) => rule.passed !== true).map((rule) => rule.rule);
 
@@ -201,6 +327,12 @@ describe('checkPreconditions', () => {
     const result = checkPreconditions({ ...base, termsMatch: false });
     expect(result.kind).toBe('rejected');
     expect(reasons(result.rules)).toEqual(['P1']);
+  });
+
+  it('rejects an account that is not the task the record names, whatever its terms', () => {
+    const result = checkPreconditions({ ...base, taskIdMatches: false });
+    expect(result.kind).toBe('rejected');
+    expect(result.rules).toEqual([expect.objectContaining({ rule: 'P1', passed: false })]);
   });
 
   it('waits while the submission is not finalized yet', () => {

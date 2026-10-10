@@ -7,11 +7,11 @@ import { isUniqueViolation } from '@taskra/shared/db';
 import { z } from 'zod';
 import { randomToken, sha256Hex } from '../auth/challenge.js';
 import { requireSession } from '../auth/routes.js';
+import { servedOverHttps } from '../config.js';
 import type { AppDeps } from '../deps.js';
 import { ApiError } from '../errors.js';
 
 const STATE_TTL_SECONDS = 10 * 60;
-const STATE_COOKIE = 'taskra_oauth_state';
 const GITHUB_TIMEOUT_MS = 10_000;
 
 const callbackQuery = z.object({
@@ -24,12 +24,17 @@ const userResponse = z.object({ id: z.number().int().positive(), login: z.string
 export function registerGithubRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { pool, config } = deps;
   const webOrigin = new URL(config.WEB_ORIGIN).origin;
+  const secure = servedOverHttps(config);
+  // Over https the name carries the `__Host-` prefix. A browser accepts such a
+  // cookie only from this exact host, with `Secure`, `Path=/` and no `Domain`,
+  // so a sibling subdomain cannot plant a state of its own choosing here.
+  const STATE_COOKIE = secure ? '__Host-taskra_oauth_state' : 'taskra_oauth_state';
   const stateCookie = {
     httpOnly: true,
     // Lax, not strict: GitHub's redirect back is a cross-site top-level navigation.
     sameSite: 'lax',
-    secure: config.NODE_ENV === 'production',
-    path: '/api/v1/github',
+    secure,
+    path: '/',
   } as const;
 
   function credentials(): { id: string; secret: string } {

@@ -68,7 +68,7 @@ the program re-checks every condition.
 |---|---|---|
 | Task existence after funding, `client`, `developer`, `amount`, `fee_bps`, state, outcome, all deadlines, `submission_nonce`, `evidence_hash`, attestation fields, `terms_hash` | **On-chain Task account** | The database caches them for search and display, tagged with the commitment and slot they were read at. On any disagreement the chain wins and the cache is rewritten. |
 | Fee rate, time windows, authority, attester, treasury, mint | **On-chain Platform account** | Cached only. |
-| USDC balances and token movements | **Solana** | Never stored as a balance; settlement rows record observed transfers. |
+| USDC balances and token movements | **Solana** | Never stored as a balance. A settlement row records how the task's amount was divided, and only when the outcome instruction's own transfers bear it out (`13-DECISIONS.md` §17.4). |
 | Draft tasks (before funding) | **Database** | Not visible on-chain. A draft becomes a task only when its Task account exists. |
 | Title, description, acceptance criteria, target repository | **Database**, bound to the chain by `terms_hash` | The API recomputes `terms_hash` from stored metadata; if it differs from the on-chain value the metadata is shown as unverified and is never used for verification. |
 | GitHub identity links, PR metadata, verification results, rejection reason text | **Database** | The chain holds only hashes (`evidence_hash`, `rejection_reason_hash`). |

@@ -28,8 +28,8 @@ configuration:
 | 401 | `UNAUTHENTICATED`, `INVALID_CHALLENGE`, `INVALID_SIGNATURE` | No session, or sign-in failed |
 | 403 | `FORBIDDEN`, `CSRF_ORIGIN` | Wrong wallet for this operation, or wrong request origin |
 | 404 | `NOT_FOUND`, `TRANSACTION_NOT_FOUND` | Unknown resource; transaction not visible at `confirmed` yet |
-| 409 | `TRANSACTION_MISMATCH`, `NO_SUBMISSION`, `STALE_SUBMISSION`, `EVIDENCE_ALREADY_REGISTERED` | Conflicts with existing or on-chain state |
-| 422 | `TRANSACTION_MISMATCH`, `TRANSACTION_FAILED`, `REASON_MISMATCH` | The transaction is not what the request says it is |
+| 409 | `NO_SUBMISSION`, `STALE_SUBMISSION`, `EVIDENCE_LOCKED` | Conflicts with existing or on-chain state |
+| 422 | `TRANSACTION_MISMATCH`, `TRANSACTION_FAILED`, `REASON_MISMATCH` | The transaction is not what the request says it is: it does not call the program, carries no instruction for this task or more than one, or is not the expected instruction |
 | 429 | `RATE_LIMITED` | Too many requests |
 | 500 | `INTERNAL` | Unexpected; details are logged, not returned |
 | 503 | `RPC_UNAVAILABLE`, `GITHUB_NOT_CONFIGURED` | A dependency is unavailable; `Retry-After` is set for RPC |
@@ -44,9 +44,12 @@ is never treated as identity. Endpoints marked **session** need the cookie.
 - CORS allows exactly `WEB_ORIGIN`, with credentials.
 - Every non-`GET` request must carry `Origin: <WEB_ORIGIN>`, or it is refused
   with `403 CSRF_ORIGIN` before any handler runs.
-- The session cookie is `HttpOnly; SameSite=Strict` (and `Secure` in
-  production), so the web app and the API must be served from the same site
-  (same registrable domain).
+- The session cookie is `HttpOnly; SameSite=Strict`, and `Secure` whenever
+  `WEB_ORIGIN` is https. The web app and the API must be served from the same
+  site (same registrable domain).
+- The API refuses to start if `WEB_ORIGIN` is neither https nor a loopback
+  address, so a deployed API cannot issue a session cookie that travels in clear
+  text. This does not depend on `NODE_ENV`.
 
 ### Rate limits
 
@@ -99,7 +102,8 @@ Creates a draft. Body:
 
 - Authorization: the session wallet becomes the client.
 - Validation: `repo` must be `owner/name` (lower-cased); criteria are
-  NFC-normalized and trimmed; `amount` in `[1, 2^64−1]`; `workDuration > 0`.
+  NFC-normalized and trimmed; `amount` in `[1, 2^64−1]`; `workDuration` between
+  1 second and 365 days (the program's `MAX_WORK_DURATION`).
 - The server generates the task UUID and derives `termsHash` and `taskAddress`.
   Metadata is immutable afterwards.
 - Side effects: one `tasks` row. Nothing on-chain; no funds.
@@ -137,10 +141,22 @@ Body `{ "signature": "<base58>" }`; `reject` also takes `"reason"`.
   from its own RPC endpoint and requires: exactly one top-level Taskra
   instruction; its task account equals this task's derived address; and, on the
   specific routes, the instruction named above.
-- Idempotency: keyed by signature. Repeating a report, or reporting while the
-  API is reconciling, changes nothing.
+- Idempotency: keyed by signature and task. Repeating a report, or reporting
+  while the API is reconciling, changes nothing. A transaction that carries
+  instructions for several tasks can be reported to each of them.
 - Side effects: one `onchain_transactions` row; the task cache is refreshed; a
   `settlements` row is written if and only if the outcome is finalized.
+- Settlement amounts are the task's own amount and fee from the finalized Task
+  account, divided as the program divides them. They are recorded only when
+  the token transfers that the task's outcome instruction itself made out of
+  the task's escrow (its inner instructions, signed by the Task PDA) bear that
+  out. Anything else in the transaction is ignored: other instructions,
+  instructions for other tasks, extra transfers, and tokens deposited into the
+  escrow and swept out with the principal neither change nor prevent the
+  record. If the RPC endpoint does not report inner instructions, nothing is
+  recorded and the next read retries.
+- Not supported: a settlement whose outcome instruction was invoked by another
+  program. It is not recorded (`13-DECISIONS.md` §17.4).
 - `reject`: only the task's client; the reason is stored only if its SHA-256
   equals the hash the transaction recorded.
 - Returns `{ transaction: { signature, instruction, status, error }, task }`.
@@ -158,6 +174,11 @@ Body `{ "prNumber": 42, "signature": "<submit_work signature, optional>" }`.
 - Side effects: one `submissions` row per `(task, nonce)` and one queued
   verification job. Repeating the request re-queues a finished job that produced
   no attestation (for example after the pull request was merged).
+- Repeating the request with a different `prNumber` corrects the registration
+  while the submission has no VERIFIED result and no attestation; after that it
+  answers `409 EVIDENCE_LOCKED`. A correction cannot make a wrong pull request
+  verify: the on-chain hash commits to the repository, the number and the head
+  commit. Every verification run records the number it examined.
 - The pull-request number is a claim. The verifier recomputes the evidence hash
   from GitHub and compares it with the chain (`13-DECISIONS.md` §10, R9).
 

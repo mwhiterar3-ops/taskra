@@ -43,7 +43,21 @@ export async function withTransaction<Result>(
   }
 }
 
+function hasCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
 /** True for a PostgreSQL unique-constraint violation. */
 export function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
+  return hasCode(error, '23505');
+}
+
+/** True when a trigger refused a change to a row that may no longer change. */
+export function isRestrictViolation(error: unknown): boolean {
+  return hasCode(error, '23001');
+}
+
+/** True when a statement lost to a concurrent one and may simply be tried again. */
+export function isSerializationFailure(error: unknown): boolean {
+  return hasCode(error, '40001');
 }

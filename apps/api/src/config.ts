@@ -24,20 +24,59 @@ const apiEnvSchema = serverEnvSchema
 export type ApiConfig = z.infer<typeof apiEnvSchema>;
 
 const ATTESTER_KEY = 'ATTESTER_SECRET_KEY';
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** True when the web app is served over TLS, which is when the session cookie is `Secure`. */
+export function servedOverHttps(config: Pick<ApiConfig, 'WEB_ORIGIN'>): boolean {
+  return new URL(config.WEB_ORIGIN).protocol === 'https:';
+}
+
+function local(config: Pick<ApiConfig, 'WEB_ORIGIN'>): boolean {
+  return LOOPBACK_HOSTS.has(new URL(config.WEB_ORIGIN).hostname);
+}
+
+const LOOPBACK_INTERFACES = new Set(['localhost', '127.0.0.1', '::1']);
 
 /**
- * Loads the API's configuration.
+ * True for anything that is not a developer's own machine: the web origin is
+ * not a loopback address, the API listens on an interface other machines can
+ * reach, or `NODE_ENV` says production. Any one of the three is enough, and
+ * nothing switches the answer off. The stricter checks of this module and of
+ * `startup.ts` apply then.
+ */
+export function isDeployed(
+  config: Pick<ApiConfig, 'WEB_ORIGIN' | 'NODE_ENV' | 'API_HOST'>,
+): boolean {
+  return (
+    !local(config) || !LOOPBACK_INTERFACES.has(config.API_HOST) || config.NODE_ENV === 'production'
+  );
+}
+
+/**
+ * Loads the API's configuration and refuses combinations that would silently
+ * weaken it. These checks do not depend on `NODE_ENV` being set correctly:
+ * what matters is where the web app is served from.
  *
- * In production the API refuses to start if the attester key is in its
- * environment at all: that is a deployment mistake that puts the one signing
- * key on the request-handling host. In development, where one `.env` file
- * serves every process, the key is tolerated here and removed from the
- * process by `discardForeignSecrets`.
+ * - A web origin that is not this machine must use https. The session cookie
+ *   is `Secure` exactly when the origin is https, so a deployed API can never
+ *   hand out a session cookie that travels in clear text.
+ * - The attester key must not be in this process's environment unless this is
+ *   a developer's own machine (`isDeployed` is false: local development, where
+ *   one `.env` serves every process; `discardForeignSecrets` then removes it).
+ *   On any deployment its presence stops the API: the one signing key must
+ *   never sit on the request-handling host.
  */
 export function loadApiConfig(source: Readonly<Record<string, string | undefined>>): ApiConfig {
   const config = parseEnv('API', apiEnvSchema, source);
+  const deployed = isDeployed(config);
+
+  if (!local(config) && !servedOverHttps(config)) {
+    throw new EnvValidationError('API', [
+      { variable: 'WEB_ORIGIN', message: 'must use https unless it is a loopback address' },
+    ]);
+  }
   const present = source[ATTESTER_KEY];
-  if (config.NODE_ENV === 'production' && present !== undefined && present !== '') {
+  if (deployed && present !== undefined && present !== '') {
     throw new EnvValidationError('API', [
       {
         variable: ATTESTER_KEY,

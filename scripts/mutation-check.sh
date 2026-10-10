@@ -78,6 +78,14 @@ mutate "8. submission nonce not bumped on resubmission" \
   's/\.checked_add\(1\)/.checked_add(u64::from(task.submission_nonce == 0))/' \
   "$SRC/instructions/submit.rs"
 
+mutate "9. work_duration has no upper bound" \
+  's/work_duration > 0 && work_duration <= MAX_WORK_DURATION/work_duration > 0/' \
+  "$SRC/instructions/create.rs"
+
+mutate "10. platform windows have no upper bound" \
+  's/window > 0 && window <= MAX_WINDOW/window > 0/' \
+  "$SRC/instructions/platform.rs"
+
 # Leave the build output matching the committed sources again.
 anchor build >/tmp/taskra-mutation-build.log 2>&1 || echo "warning: final rebuild failed"
 
@@ -85,4 +93,4 @@ if [ "$survivors" -gt 0 ]; then
   echo "RESULT: $survivors mutation(s) not caught"
   exit 1
 fi
-echo "RESULT: all 8 mutations caught"
+echo "RESULT: all 10 mutations caught"

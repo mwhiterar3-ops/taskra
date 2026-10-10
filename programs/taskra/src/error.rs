@@ -4,7 +4,7 @@ use anchor_lang::prelude::*;
 pub enum TaskraError {
     #[msg("fee_bps must not exceed 10000")]
     InvalidFeeBps,
-    #[msg("Time windows must be positive")]
+    #[msg("Time windows must be positive and at most 365 days")]
     InvalidWindow,
     #[msg("Authority, attester, treasury owner and upgrade authority must be separate keys")]
     KeysNotSeparate,
@@ -12,7 +12,7 @@ pub enum TaskraError {
     InvalidUpgradeAuthority,
     #[msg("Amount must be greater than zero")]
     InvalidAmount,
-    #[msg("Work duration must be greater than zero")]
+    #[msg("Work duration must be positive and at most 365 days")]
     InvalidWorkDuration,
     #[msg("Hash must not be all zeros")]
     ZeroHash,

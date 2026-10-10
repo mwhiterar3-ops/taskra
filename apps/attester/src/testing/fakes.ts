@@ -14,6 +14,7 @@ import {
 import bs58 from 'bs58';
 import type { AttesterChain, SignatureState, TaskRead } from '../chain.js';
 import type {
+  Commit,
   GithubCallMeta,
   GithubClient,
   GithubOutcome,
@@ -213,11 +214,17 @@ export const unavailable = (reason: string): GithubOutcome<never> => ({
 export class FakeGithub implements GithubClient {
   pullRequest: GithubOutcome<PullRequest> = notFound();
   repository: GithubOutcome<Repository> = notFound();
+  commit: GithubOutcome<Commit> = notFound();
   readonly calls: string[] = [];
 
   getPullRequest(repo: string, number: bigint): Promise<GithubOutcome<PullRequest>> {
     this.calls.push(`pull ${repo}#${number.toString()}`);
     return Promise.resolve(this.pullRequest);
+  }
+
+  getCommit(repo: string, sha: string): Promise<GithubOutcome<Commit>> {
+    this.calls.push(`commit ${repo}@${sha.slice(0, 7)}`);
+    return Promise.resolve(this.commit);
   }
 
   getRepository(repo: string): Promise<GithubOutcome<Repository>> {

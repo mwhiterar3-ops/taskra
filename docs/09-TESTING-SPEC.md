@@ -42,7 +42,7 @@ terminal with escrow closed; total tokens paid out never exceed the amount; at
 most one terminal outcome occurs. A fixed seed always runs, plus a seed range
 sized by `TASKRA_FUZZ_SEEDS` / `TASKRA_FUZZ_STEPS`.
 
-`scripts/mutation-check.sh` seeds eight defects into the program one at a time;
+`scripts/mutation-check.sh` seeds ten defects into the program one at a time;
 the suite must catch every one.
 
 Reliability rewards are deferred from the MVP, so there is no reward-cap test.
@@ -108,8 +108,13 @@ a condition. Protocol timing is never changed to make a test pass.
 | Settlement recorded once under concurrency; found without a report; amounts that do not add up | `tasks.test.ts`, e2e B |
 | RPC unavailable: 503 on writes, cache on reads, retry policy | `tasks.test.ts`, `chain.test.ts` |
 | Stale or tampered metadata; on-chain/database mismatch | `tasks.test.ts`, `rules.test.ts`, e2e F |
-| Database rollback, constraints, append-only audit rows, role isolation | `db.test.ts` |
+| Database rollback, constraints, append-only audit rows, role isolation, leaving a role through a shared login, the API's check of its own login | `db.test.ts` |
 | Valid submission; every rule R1–R9; changed head; deleted repository | `rules.test.ts`, `worker.test.ts`, e2e A/E |
+| Unrelated merged pull request; wrong task; two tasks; wrong or second wallet; forged GitHub link (R11, R12) | `rules.test.ts`, `worker.test.ts`, e2e H |
+| Settlement composed with unrelated transfers; malformed or missing inner instructions; credited exactly once | `tasks.test.ts`, `chain.test.ts`, e2e A |
+| Durations and windows at and beyond their bounds; every exit at the maximum bounds | `programs/taskra/tests/duration_bounds.rs` |
+| Correcting a registration before verification; locked after | `tasks.test.ts`, `db.test.ts` |
+| Fail-closed configuration: https origin, attester key on a deployed API | `app.test.ts`, `auth.test.ts` |
 | GitHub outage, timeout, rate limit, malformed response | `github.test.ts`, `worker.test.ts`, e2e E |
 | Duplicate, replayed and concurrent verification jobs; superseded submission | `worker.test.ts`, e2e F |
 | Attestation retry, dropped and refused sends, crash before send, key rotated | `worker.test.ts` |

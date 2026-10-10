@@ -8,6 +8,7 @@ import {
   createAndFundTask,
   createUsdcAccountIdempotent,
   evidenceHash,
+  evidenceTrailers,
   expireDispute,
   expireReview,
   fetchTokenAmount,
@@ -62,6 +63,7 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
     return <p className="muted">Connect a wallet to act on this task.</p>;
   }
   const task = new PublicKey(detail.taskAddress);
+  const myAddress = app.address;
   const { taskra, api } = app;
   const disabled = tx.busy;
 
@@ -303,6 +305,14 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
             {action.kind === 'submit' && action.enabled ? (
               <form onSubmit={submitEvidence} className="form">
                 <h3>{LABELS.submit}</h3>
+                <p>
+                  The final commit of your pull request must end with these two lines. They say
+                  which task the work is for and which wallet is paid, and they cannot be added
+                  after the pull request is merged.
+                </p>
+                <pre className="mono notice" data-testid="trailers">
+                  {evidenceTrailers(detail.id, myAddress)}
+                </pre>
                 <label>
                   Pull request number in <span className="mono">{detail.repo}</span>
                   <input

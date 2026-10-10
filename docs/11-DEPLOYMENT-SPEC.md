@@ -122,7 +122,9 @@ marked **not verified**.
   ```
 
   Give the API the first login's `DATABASE_URL` and the attestation service the
-  second's. Neither service should have the migration login.
+  second's. Neither service should have the migration login. The API refuses to
+  start with it, or with any login that could act as the attestation role; the
+  attestation service does not check its own.
 - **Backup.** The database is the only copy of: task titles, descriptions and
   acceptance criteria; GitHub identity links; rejection reason text; and the
   verification audit trail. Take regular logical backups (`pg_dump`) and keep

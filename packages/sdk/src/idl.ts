@@ -86,6 +86,19 @@ function seedConstant(name: string): Uint8Array {
   return Uint8Array.from(JSON.parse(constant.value) as number[]);
 }
 
+function integerConstant(name: string): bigint {
+  const constant = IDL.constants.find((candidate) => candidate.name === name);
+  if (constant === undefined || !/^\d+$/.test(constant.value)) {
+    throw new TaskraSdkError('INVALID_ARGUMENT', `IDL constant ${name} is missing`);
+  }
+  return BigInt(constant.value);
+}
+
+/** Longest `work_duration` the program accepts in `create_and_fund_task`, in seconds. */
+export const MAX_WORK_DURATION = integerConstant('MAX_WORK_DURATION');
+/** Longest value of each platform time window the program accepts, in seconds. */
+export const MAX_WINDOW = integerConstant('MAX_WINDOW');
+
 export const PLATFORM_SEED = seedConstant('PLATFORM_SEED');
 export const TASK_SEED = seedConstant('TASK_SEED');
 export const ESCROW_SEED = seedConstant('ESCROW_SEED');

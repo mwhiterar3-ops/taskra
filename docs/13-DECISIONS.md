@@ -36,6 +36,12 @@ implementation details chosen under the owner's delegated judgment.
 | D20 | Toolchain | Ubuntu on WSL; repository at `~/taskra`; versions pinned in §12. |
 | D21 | Evidence hash | SHA-256 over the domain-separated, fixed-field-order encoding of `{repo, pr_number, head_sha}` with prefix `taskra:evidence:v1` (§10.3). This replaces `merge_commit_sha` everywhere. `submit_work` stays generic: any non-zero hash. |
 | D22 | Developer-dispute timing | Unchanged after review. A developer who submits junk can delay the client's refund but can never be paid by it; the bound and the rationale are in §2.7. An attester "REJECTED" record is **not** implemented and would need explicit approval. |
+| D24 | Duration and window bounds | `work_duration` is at most 365 days and each platform window is at most 365 days, enforced by the program (`MAX_WORK_DURATION`, `MAX_WINDOW`). Without a bound a task could be accepted and then never submitted, cancelled or refunded (§17.1). |
+| D25 | Evidence is bound to the task | A pull request counts only if its **head commit message** names the task and the developer wallet (rules R11 and R12, §10.1, §17.2). |
+| D26 | Dispute default | Unchanged from D6 after review: when the authority does not resolve a dispute in time, verified work is paid and unverified work is refunded. The alternatives and the reasoning are in §17.3. |
+| D27 | Settlement records | A settlement record is the task's own `amount` and fee, divided as the program divides them, written only when the outcome instruction's own escrow transfers bear that out. Tokens swept out of an escrow beyond the task amount are not earnings. A transaction is recorded once per task it concerns. A settlement invoked through another program is not recorded (§17.4). |
+| D28 | Correction and verification | A VERIFIED result can exist only for the pull-request number registered at the moment it is recorded. The database enforces it by rewriting the submission row when a VERIFIED result is inserted (§17.5). |
+| D29 | The API's database login | On a deployment the API refuses to start with a login that could write a verification result or an attestation record: a superuser, a role administrator, an owner of the schema's tables, a member of `taskra_attester`, or any login holding such a privilege by another route. It fails closed and has no off switch. Role names alone separate nothing (§17.6). |
 | D23 | Deploy profiles | Time windows are deploy-time configuration, immutable after `initialize_platform`. Production and devnet-demo values are in §15. |
 
 ---
@@ -88,7 +94,7 @@ are never valid at the same timestamp.
 | # | State | Actor | Action | Preconditions | Next State | Fund Movement |
 |---|---|---|---|---|---|---|
 | T0 | — | Client | API: create draft | Authenticated wallet session | `DRAFT` | None |
-| T1 | `DRAFT` | Client | `create_and_fund_task` | `amount > 0`; `work_duration > 0`; terms hash non-zero; Task PDA does not exist; source holds `amount` of the configured mint | `OPEN` | Client → escrow: `amount` |
+| T1 | `DRAFT` | Client | `create_and_fund_task` | `amount > 0`; `0 < work_duration ≤ 365 days`; terms hash non-zero; Task PDA does not exist; source holds `amount` of the configured mint | `OPEN` | Client → escrow: `amount` |
 | T2 | `OPEN` | Client | `cancel_task` | Signer is `task.client` | `CANCELLED` | Escrow → client: full balance |
 | T3 | `OPEN` | Developer | `accept_task` | Signer ≠ `task.client` | `ACCEPTED` | None |
 | T4 | `ACCEPTED` | Developer | `submit_work` | Signer is `task.developer`; `now ≤ work_deadline`; evidence hash non-zero | `SUBMITTED` | None |
@@ -127,9 +133,39 @@ developer's window and the client's refund window are therefore disjoint in time
 
 A task that reaches `DISPUTED` this way has no valid attestation. The authority
 may still resolve it either way on the merits; if the authority does nothing, the
-fallback refunds the client (T16). Escrow is never locked: every non-terminal
-state has a transition to a terminal state that becomes available by a fixed
-time with no action required from the other party.
+fallback refunds the client (T16).
+
+**Liveness, and its limits.** Every non-terminal state has a transition to a
+terminal state that becomes available by a fixed time with no action required
+from the other party. That holds under these conditions, which are part of the
+claim and not footnotes to it:
+
+- `work_duration` and the platform windows are within the bounds of D24, which
+  the program enforces. Before D24 this property was **false**: a
+  `work_duration` close to `i64::MAX` produced a task that could be accepted
+  but never submitted, cancelled or refunded (reproduced on a local validator;
+  §17.1).
+- The destination token account of the remaining exit exists and is not frozen
+  by the mint's issuer, and for developer-paying exits the treasury account is
+  usable (L5). The program cannot make a frozen account receive tokens.
+- Someone sends the instruction. There is no keeper. Only `expire_review` and
+  `expire_dispute` are permissionless. The other exits are the **client's
+  own**: `cancel_task` (`OPEN`) and `refund_expired` (`ACCEPTED` after the work
+  deadline; `SUBMITTED` after the refund time) must be signed by the client and
+  by nobody else. "No action required from the other party" is therefore true,
+  and "no action required" is not: a client who loses their key leaves the
+  escrow of an `OPEN`, `ACCEPTED` or undisputed `SUBMITTED` task locked for
+  good. Nobody else is harmed by that, and nobody else can release it.
+- The task and the platform were created by a program version that enforces
+  D24. The bounds are checked when a task is created and when the platform is
+  initialized, and not again afterwards (§17.1).
+- The cluster clock advances and stays far below `i64::MAX` (deadlines lie at
+  most five years after the transaction that sets them).
+
+Within those conditions the transitions were examined instruction by
+instruction and exercised at the maximum bounds
+(`programs/taskra/tests/duration_bounds.rs`). That is an argument and a test
+suite, not a proof.
 
 ### 2.5 Where funds go, and why double settlement is impossible
 
@@ -683,6 +719,8 @@ Implemented off-chain in Phase 4.
 | R8 | The merge timestamp is at or before the work deadline. | REJECTED |
 | R9 | The evidence hash recomputed from GitHub's data (the task's repository, the PR number, and the merged PR's final head SHA) equals the `evidence_hash` on the Task account. | REJECTED |
 | R10 | Any GitHub API failure, rate limit or timeout. | PENDING, retryable; never VERIFIED |
+| R11 | The message of the pull request's head commit contains exactly one distinct `Taskra-Task:` line, and it names this task's UUID. | REJECTED |
+| R12 | The same message contains exactly one distinct `Taskra-Developer:` line, and it names the task's on-chain developer wallet (case-sensitive). | REJECTED |
 
 The verifier never trusts a hash, head SHA or repository name supplied in a
 request: it fetches the PR from GitHub, recomputes the hash itself and compares
@@ -693,8 +731,8 @@ these conditions; it does not claim a merged PR proves the work is correct.
 
 ### 10.2 Statuses
 
-`PENDING`, `VERIFIED` (all of R1–R9 hold), `REJECTED` (at least one of R1–R9
-fails on real data). Every result stores which rules passed and failed.
+`PENDING`, `VERIFIED` (all of R1–R9, R11 and R12 hold), `REJECTED` (at least one
+of them fails on real data). Every result stores which rules passed and failed.
 
 ### 10.3 Evidence hash (D21)
 
@@ -830,9 +868,13 @@ Reversible implementation details, recorded for transparency.
 | L1 | Accept-squatting (D9). |
 | L2 | The residual collusion assumption of Option B (§7.5). |
 | L3 | The program is upgradeable; the upgrade authority is fully trusted. |
+| L7 | A pull request that carries the task and wallet lines (D25) is still not proof that the work meets the acceptance criteria. Whoever merges it decides that; when the merger is not the client, the client's protection is the review window and then the dispute. |
 | L4 | A junk submission can delay the client's refund by up to `work_duration + max(review_window, verification_grace) + review_window + dispute_timeout` after acceptance (production: `work_duration + 11 days`) when the authority is absent (§2.7). It can never produce a payment. |
 | L5 | A treasury token account that is closed or frozen blocks developer-paying settlements until the authority rotates it. |
 | L6 | An unmerged PR can never be VERIFIED. A developer whose work the client will not merge depends on the authority's decision in a dispute; if the authority is absent the client is refunded. |
+| L8 | A settlement invoked through another program (not as a top-level instruction) is real on-chain and is not recorded by the API: no settlement row and no reputation (§17.4). |
+| L9 | Verification checks the repository a pull request was merged into, not the branch. Any other account with write access can merge into any branch. |
+| L10 | `cancel_task` and `refund_expired` need the client's signature. A client who loses their key locks their own escrow in `OPEN`, `ACCEPTED` and undisputed `SUBMITTED` (§2.4). |
 
 ---
 
@@ -885,3 +927,244 @@ cluster has its own Platform account, so each deployment picks one profile.
 The randomized suite always runs the fixed seed `0x7A5C2026` and the range
 `0..TASKRA_FUZZ_SEEDS` (default 48), each for `TASKRA_FUZZ_STEPS` steps (default
 60). Both are environment variables so CI can run a longer campaign.
+
+---
+
+## 17. Security remediation 1
+
+Changes made after the adversarial review of published commit `e82eec5`
+(`15-SECURITY-AUDIT.md` §7). They amend D7, §2.4, §9 and §10.
+
+### 17.1 Bounds on durations (D24)
+
+The program accepted any positive `work_duration`. With a work deadline within
+about fifteen seconds of `i64::MAX`, `accept_task` succeeded, `submit_work`
+failed with `MathOverflow` (its windows are computed from the verification
+deadline), `cancel_task` failed because the task was no longer `OPEN`, and
+`refund_expired` could never open. The escrow was locked permanently. Only the
+client could choose that value, so it harmed nobody else, but it contradicted
+the liveness claim of §2.4.
+
+`create_and_fund_task` now requires `work_duration ≤ 365 days` and
+`initialize_platform` requires each window `≤ 365 days`. Every deadline is then
+at most five years after the transaction that sets it; the checked additions
+cannot overflow for any reachable clock value, and every deadline arrives. The
+API applies the same limit to drafts; the program is the authority.
+
+365 days matches the limit the web form already had. It is also the cap on how
+long an accept-squatter (L1) can hold a task.
+
+**Upgrades.** The bounds are enforced where the values enter: at
+`create_and_fund_task` and at `initialize_platform`. `accept_task` does not
+check `work_duration` again, and the platform windows cannot be changed after
+initialization. If a version without D24 were ever deployed and then upgraded,
+a task already created with an unbounded duration could still be accepted and
+locked, and a platform already initialized with larger windows would keep them.
+This project has not deployed any version to a public cluster, so no such state
+exists today; an upgrade of a live deployment would have to deal with it
+explicitly (re-check in `accept_task`, or a new platform account).
+
+### 17.2 Binding a pull request to a task (D25)
+
+Rules R1–R9 established that *a* pull request by the developer was merged by
+someone else into the task's repository inside the work window. They did not
+establish that it was *for the task*. A contributor to a busy repository could
+accept a task and submit any unrelated pull request of theirs that happened to
+be merged afterwards; it was VERIFIED.
+
+**Design.** The final commit of the pull request must carry two lines:
+
+```text
+Taskra-Task: <task uuid>
+Taskra-Developer: <developer wallet address>
+```
+
+- They are read from the **head commit's message**, fetched from GitHub by SHA.
+  The evidence hash already commits to that SHA, and a commit's message is fixed
+  by its SHA. Unlike a pull-request title or description, it cannot be edited in
+  after the merge, and an existing merged pull request cannot be retrofitted.
+- Exactly one distinct task and one distinct wallet may be named. One pull
+  request therefore serves at most one task, and names its payee.
+- The wallet line also removes a trust assumption: the verifier no longer relies
+  on the database's wallet-to-GitHub link alone (rule R5). A rewritten link is
+  not enough, because the author's own commit names the wallet to be paid.
+
+**What changes for a pull request.**
+
+| Event | Effect |
+|---|---|
+| New commit pushed, or force-push | New head SHA: the submitted hash no longer matches (R9), as before. The new head commit must carry the lines. |
+| Title or description edited | Nothing. They are not read. |
+| Merged | The head SHA is final; so is its message. |
+| Closed and reopened, or replaced by another pull request | A different pull request or head means a different evidence hash: the developer resubmits on-chain, which starts a new nonce and voids any earlier attestation. |
+| Squash or rebase merge | The pull request's own head commit is unchanged and remains fetchable; that is the commit examined. |
+
+**What it does not do.** A developer can put the lines on a pull request that
+does not satisfy the acceptance criteria, or that has nothing to do with the
+task. The binding makes the claim explicit, immutable and visible to whoever
+merges; it does not judge the work (L7). It narrows the original finding and
+does not close it. Specifically:
+
+- The lines are a declaration by whoever wrote the head commit. Commit
+  authorship is not authenticated; rule R5 checks who opened the pull request,
+  not who wrote its commits. Anyone with push access to the pull request's
+  branch can write the head commit.
+- Only the head commit is read. A commit added by someone else just before the
+  merge (updating the branch, committing a suggestion) replaces it, and the
+  work can then no longer be verified.
+- The branch the pull request was merged into is not checked, only the
+  repository (L9).
+- Nothing is observed after the merge. A revert does not undo a verification.
+
+### 17.3 The dispute default (D26)
+
+When the client rejects VERIFIED work and the authority does nothing for the
+dispute timeout, `expire_dispute` pays the developer. Before D25 that default
+combined badly with unbound evidence: an unrelated pull request could be
+attested, and an absent authority then meant payment.
+
+| Default when the authority is silent | Who can abuse it | Cost of the abuse |
+|---|---|---|
+| **Pay verified work (current)** | A developer whose pull request was merged by a third party, carries the task lines, yet does not meet the criteria | Needs a maintainer to merge it and the authority to stay silent for the whole timeout |
+| Refund the client | Any client: reject every delivery and wait | Nothing. No third party is needed. Honest developers lose completed, merged work whenever the authority is unavailable |
+| Split | — | Forbidden by D5 |
+
+Refunding by default would let a client take merged work for free with no
+cooperation from anyone, and would make the attestation meaningless exactly
+when the platform is unavailable. Paying verified work needs an accomplice or a
+careless merger. With D25 in place the attestation is harder to obtain
+improperly, which is where the weakness was. **The default is therefore kept**,
+and no program change was made to it.
+
+This is a judgement about incentives, not a proof, and it is the owner's to
+revisit: changing it means changing `expire_dispute` and D6.
+
+### 17.4 What a settlement record is (D27)
+
+A third pass over the remediation (`15-SECURITY-AUDIT.md` §7.5) found that the
+record of a settlement still depended on things its sender controls.
+
+**Which instruction.** A transaction can carry any number of Taskra
+instructions for any number of tasks. For a task, the API reads the top-level
+Taskra instructions whose Task account is that task's and takes the outcome
+instruction among them. The program lets one outcome instruction succeed per
+task, ever, so in a successful transaction there is exactly one; if a
+transaction appears to carry two, nothing is recorded. Instructions for other
+tasks, instructions of other programs and failed transactions are ignored. A
+transaction is stored once per task it concerns, so one transaction that
+settles two tasks produces two settlement records.
+
+**Which transfers.** Only the token transfers that outcome instruction made
+itself, out of that task's escrow, in the platform mint, signed by the Task
+PDA. Inner instructions listed under any other top-level instruction are not
+its own and are not read.
+
+**Which amounts.** The record holds the task's `amount` and the fee computed
+from the task's `fee_bps`, divided as the program divides them: fee and
+`amount − fee` when the developer was paid, `amount` when the client was
+refunded. The transfers are the evidence: every one must go to the account the
+instruction named for the party the terminal state says was paid, the treasury
+must have received exactly the fee, and the paid party at least its share.
+"At least", because the program sends the whole escrow balance, and anyone can
+deposit into an escrow. A deposit is swept to the paid party and is not part of
+the task, so it is not recorded. Recording transfers instead let a developer
+deposit and take back any sum in the settling transaction and call it earnings.
+
+**What is not supported.** A settlement whose outcome instruction was invoked
+by another program is not a top-level instruction. The API recognises it from
+the inner instructions, records nothing and logs why on every read of the task
+(L8). The chain state of the task is still shown. Attributing the transfers of
+a nested call correctly needs the nesting depth of each inner instruction and a
+wrapper program to test against; neither is available here, and a record that
+might be wrong is worse than none.
+
+**If the RPC node omits inner instructions**, nothing is recorded and the next
+read tries again. Recording is idempotent: one settlement per task, by primary
+key.
+
+### 17.5 Correcting a registration while it is being verified (D28)
+
+The pull-request number of a submission can be corrected until the submission
+is verified (§10, L-02 of the audit). Verification takes time: the attestation
+service reads the number, asks GitHub, and then records a result. A correction
+landing in between must not leave a VERIFIED result for a number that is no
+longer registered.
+
+The database decides. Inserting a VERIFIED result rewrites the submission row
+(to the same values), which locks it until that transaction ends:
+
+| Order of commits | What happens |
+|---|---|
+| Correction, then VERIFIED | The insert of the VERIFIED result waits for the correction, then finds a different number registered and is refused. Nothing is recorded, nothing is signed, and the job is retried against the number registered now |
+| VERIFIED, then correction | The correction waits for the result, then finds it and is refused. The API answers `409 EVIDENCE_LOCKED` |
+
+So a VERIFIED result, and the attestation that requires one, always names the
+registered number, and a registration that lost the race is still correctable.
+Results that verify nothing are history and may be about an older number; the
+task page shows only a result for the number registered now.
+
+The row is rewritten, not merely locked. The first version of this rule took a
+shared lock (`SELECT ... FOR SHARE`). A lock leaves no trace once it is
+released, and the correction's own check for a VERIFIED result runs on the
+snapshot of the transaction that makes it. A correction made in a `REPEATABLE
+READ` transaction that began before the VERIFIED result was committed saw
+neither, and went through (`15-SECURITY-AUDIT.md` §7.7, O-1). The API does not
+use that isolation level; whoever holds its database role could. Against a
+rewritten row the same correction fails with a serialization error.
+
+The rewrite happens inside a trigger function that runs with its owner's
+rights, because the attestation role has no privilege to lock or change a
+submission and is not given one.
+
+### 17.6 The API's database login (D29)
+
+The two database roles keep a compromised API from writing verification results
+and attestation records only if the API's login cannot become anything else.
+`SET ROLE taskra_api` on each connection does not make it so: with the
+migration login, `SET ROLE NONE` followed by two inserts produces an
+attestation record that the attestation service will sign for.
+
+On a deployment the API therefore inspects its login before it listens and
+exits with status 1 if the login is a superuser, may create roles, owns tables
+of the schema, or is a member of `taskra_attester`. Those four are named for the
+sake of the message. What decides is a fifth check that does not depend on
+names: no role the login is or can become may insert a verification result or
+insert or update an attestation record, by whatever route it holds the
+privilege (a direct grant, `pg_write_all_data`, a role nobody listed).
+
+It fails closed. A login that cannot be inspected, because there is no
+connection or no schema, is refused like an unsafe one. There is no setting
+that skips the check, and it was deliberately not made a warning: a warning
+would be read once and then run in production.
+
+"Deployment" is the same test the API applies to the attester key, and any one
+of three signs is enough: a web origin that is not a loopback address, an
+`API_HOST` that other machines can reach, or `NODE_ENV=production`. The third
+sign was added with this check, so that a demo configuration with a loopback
+web origin cannot expose an API that skipped it. Only a development process
+that listens on loopback for a loopback origin is exempt; there one login
+still serves the migrations and every process.
+
+This narrows one path and does not close the others. The API's role can still
+insert settlement records (L-09) and rewrite the GitHub identity link (M-03).
+The attestation service still signs for the attestation records it finds
+without verifying again, so whoever obtains *its* login can make it sign.
+
+### 17.7 Smaller rules added by the fourth pass
+
+- **Which task an account is.** The attestation service compares the Task
+  account's own `task_id` with the id of the database record before anything
+  else (precondition P1). Rule R11 compares the head commit with the record's
+  id; without this, a record whose address was another task's account would
+  have let a pull request made for one task verify another.
+- **A settlement record adds up, in the database too.** Fee plus developer
+  share equals the task amount for a settled task; the client's amount equals
+  it otherwise (`CHECK settlements_amounts_add_up`). It makes a record of the
+  N-3 kind impossible to store. It does not make a record true.
+- **An outcome that cannot be found is reported.** When a task is terminal at
+  `finalized` and no examined transaction carries its outcome instruction,
+  reconciliation says so on every read instead of returning quietly. Two causes
+  look the same from here: the transaction is older than the 25 newest
+  signatures of the task (L-07), or it was made through another program and the
+  RPC node did not report inner instructions. Reporting the signature to the
+  API recovers the first.

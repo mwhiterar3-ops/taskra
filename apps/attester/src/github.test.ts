@@ -137,6 +137,34 @@ describe('GitHub client', () => {
     expect(result).toMatchObject({ kind: 'unavailable', reason: 'GitHub did not answer in time' });
   });
 
+  it('returns a commit message for exactly the commit that was asked for', async () => {
+    const sha = '0123456789abcdef0123456789abcdef01234567';
+    const body = {
+      sha: sha.toUpperCase(),
+      commit: { message: 'Subject\n\nTaskra-Task: x' },
+      files: [],
+    };
+    const { fetch, requests } = fakeFetch(() => json(body));
+    const result = await createGithubClient({ fetch }).getCommit('octo-org/parser', sha);
+    expect(result).toMatchObject({
+      kind: 'ok',
+      value: { sha, message: 'Subject\n\nTaskra-Task: x' },
+    });
+    expect(requests[0]?.url).toBe(`https://api.github.com/repos/octo-org/parser/commits/${sha}`);
+
+    const other = fakeFetch(() => json({ ...body, sha: 'f'.repeat(40) }));
+    const mismatch = await createGithubClient({ fetch: other.fetch }).getCommit(
+      'octo-org/parser',
+      sha,
+    );
+    expect(mismatch.kind).toBe('unavailable');
+
+    const missing = fakeFetch(() => json({ message: 'Not Found' }, 404));
+    expect(
+      (await createGithubClient({ fetch: missing.fetch }).getCommit('octo-org/parser', sha)).kind,
+    ).toBe('not_found');
+  });
+
   it('parses a repository', async () => {
     const { fetch } = fakeFetch(() =>
       json({ full_name: 'octo-org/parser', created_at: '2020-01-01T00:00:00Z' }),

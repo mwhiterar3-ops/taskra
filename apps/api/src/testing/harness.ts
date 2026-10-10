@@ -8,6 +8,7 @@ import {
   findEscrowAddress,
   type TaskAccount,
   type TaskraConfig,
+  TOKEN_PROGRAM_ID,
 } from '@taskra/sdk';
 import { createPool } from '@taskra/shared/db';
 import { type TestDatabase, testDatabase } from '@taskra/shared/testing/postgres';
@@ -16,6 +17,7 @@ import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import pg from 'pg';
 import { buildApp } from '../app.js';
 import { SESSION_COOKIE } from '../auth/challenge.js';
+import type { InnerInstruction } from '../chain/parse.js';
 import type { ApiConfig } from '../config.js';
 import type { AppDeps } from '../deps.js';
 import { FakeChain } from './fake-chain.js';
@@ -72,6 +74,8 @@ export interface HarnessOptions {
   readonly rateLimit?: boolean;
   readonly fetch?: typeof fetch;
   readonly github?: boolean;
+  /** Defaults to `WEB_ORIGIN` (http on localhost). */
+  readonly webOrigin?: string;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -81,7 +85,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     NODE_ENV: 'test',
     API_HOST: '127.0.0.1',
     API_PORT: 4000,
-    WEB_ORIGIN,
+    WEB_ORIGIN: options.webOrigin ?? WEB_ORIGIN,
     SOLANA_NETWORK: 'localnet',
     SOLANA_RPC_URL: 'http://127.0.0.1:8899',
     TASKRA_PROGRAM_ID: taskra.programId.toBase58(),
@@ -111,7 +115,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   await app.ready();
 
   const headers = (cookie?: string) => ({
-    origin: WEB_ORIGIN,
+    origin: options.webOrigin ?? WEB_ORIGIN,
     ...(cookie === undefined ? {} : { cookie }),
   });
   const harness: Harness = {
@@ -217,6 +221,57 @@ export function openAccount(task: TaskJson, patch: Partial<TaskAccount> = {}): T
     escrowBump: 255,
     ...patch,
   };
+}
+
+/** SPL Token `TransferChecked` as it appears among a transaction's inner instructions. */
+export function tokenTransferChecked(
+  source: string,
+  mint: string,
+  destination: string,
+  authority: string,
+  amount: bigint,
+): InnerInstruction {
+  const data = new Uint8Array(10);
+  data[0] = 12;
+  new DataView(data.buffer).setBigUint64(1, amount, true);
+  data[9] = 6;
+  return {
+    programId: TOKEN_PROGRAM_ID.toBase58(),
+    accounts: [source, mint, destination, authority],
+    data,
+  };
+}
+
+/** SPL Token `CloseAccount` as an inner instruction. */
+export function tokenCloseAccount(
+  account: string,
+  destination: string,
+  authority: string,
+): InnerInstruction {
+  return {
+    programId: TOKEN_PROGRAM_ID.toBase58(),
+    accounts: [account, destination, authority],
+    data: Uint8Array.of(9),
+  };
+}
+
+/**
+ * The inner instructions of a real outcome instruction: one transfer out of the
+ * task's escrow per payout, signed by the Task PDA, then the escrow's closure.
+ */
+export function settlementInner(
+  harness: Harness,
+  task: TaskJson,
+  payouts: readonly (readonly [destination: string, amount: bigint])[],
+): InnerInstruction[] {
+  const escrow = escrowOf(harness, task);
+  const mint = harness.taskra.usdcMint.toBase58();
+  return [
+    ...payouts.map(([destination, amount]) =>
+      tokenTransferChecked(escrow, mint, destination, task.taskAddress, amount),
+    ),
+    tokenCloseAccount(escrow, task.clientWallet, task.taskAddress),
+  ];
 }
 
 export function escrowOf(harness: Harness, task: TaskJson): string {

@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { evidenceHash, type TaskAccount, termsHash } from '@taskra/sdk';
-import type { PullRequest } from '../github.js';
+import type { Commit, PullRequest } from '../github.js';
+import { requiredTrailers } from '../rules.js';
 
 export const REPO = 'octo-org/parser';
 export const CRITERIA = 'Parses transaction signatures\nReturns structured output';
@@ -65,6 +66,19 @@ export function submittedTask(patch: Partial<TaskAccount> = {}): TaskAccount {
     bump: 255,
     escrowBump: 255,
     ...patch,
+  };
+}
+
+export const TASK_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+/** A head commit that declares it is for `taskId` and pays `wallet`. */
+export function headCommit(
+  taskId: string = TASK_ID,
+  wallet: string = DEVELOPER.toBase58(),
+): Commit {
+  return {
+    sha: HEAD_SHA,
+    message: `Add the transaction parser\n\nParses signatures into structured output.\n\n${requiredTrailers(taskId, wallet)}\n`,
   };
 }
 
