@@ -1,6 +1,12 @@
-import { rejectionReasonHash } from '@taskra/sdk';
+import { rejectionReasonHash, toHex } from '@taskra/sdk';
 import { describe, expect, it } from 'vitest';
-import { REJECTION_REASON_MAX, rejectionReasonProblem } from './rejection';
+import { ApiError, type TaskDetail } from './api';
+import {
+  hasUnpublishedRejection,
+  REJECTION_REASON_MAX,
+  rejectionReasonProblem,
+  saveRejectionReason,
+} from './rejection';
 
 const MAX = REJECTION_REASON_MAX;
 
@@ -50,5 +56,93 @@ describe('rejectionReasonProblem', () => {
       expect(rejectionReasonProblem(reason)).toBeNull();
       expect(() => rejectionReasonHash(reason)).not.toThrow();
     }
+  });
+});
+
+describe('saveRejectionReason', () => {
+  const REASON = 'Not what was asked for.';
+  const shows = (rejection: TaskDetail['rejection']) => ({ rejection }) as TaskDetail;
+  const save = (report: () => Promise<TaskDetail>) =>
+    saveRejectionReason({ report }, 'task', 'signature', REASON);
+
+  it('is saved only when the answer shows this text', async () => {
+    const reasonHash = toHex(rejectionReasonHash(REASON));
+    expect(await save(() => Promise.resolve(shows({ reason: REASON, reasonHash })))).toEqual({
+      saved: true,
+    });
+    // Padding and normalization do not change what is stored, so they do not change the hash.
+    expect(
+      await saveRejectionReason(
+        { report: () => Promise.resolve(shows({ reason: REASON, reasonHash })) },
+        'task',
+        'signature',
+        `  ${REASON}\n`,
+      ),
+    ).toEqual({ saved: true });
+  });
+
+  it('is not saved when the API answers without showing it, or shows another text', async () => {
+    for (const rejection of [null, { reason: 'other', reasonHash: 'ab'.repeat(32) }]) {
+      expect(await save(() => Promise.resolve(shows(rejection)))).toMatchObject({
+        saved: false,
+        retryable: true,
+      });
+    }
+  });
+
+  it('can be retried after an outage, a lost session or a transaction not seen yet', async () => {
+    const cases: [ApiError | Error, boolean][] = [
+      [new ApiError(0, 'NETWORK', 'x'), false],
+      [new ApiError(401, 'UNAUTHENTICATED', 'x'), true],
+      [new ApiError(404, 'TRANSACTION_NOT_FOUND', 'x'), false],
+      [new ApiError(429, 'RATE_LIMITED', 'x'), false],
+      [new ApiError(500, 'INTERNAL', 'x'), false],
+      [new Error('anything else'), false],
+    ];
+    for (const [error, sessionExpired] of cases) {
+      expect(await save(() => Promise.reject(error))).toMatchObject({
+        saved: false,
+        retryable: true,
+        sessionExpired,
+      });
+    }
+  });
+
+  it('cannot be retried when the API refuses the text or the caller', async () => {
+    for (const error of [
+      new ApiError(400, 'VALIDATION_ERROR', 'x'),
+      new ApiError(403, 'FORBIDDEN', 'x'),
+      new ApiError(404, 'NOT_FOUND', 'x'),
+      new ApiError(422, 'REASON_MISMATCH', 'x'),
+    ]) {
+      expect(await save(() => Promise.reject(error))).toMatchObject({
+        saved: false,
+        retryable: false,
+      });
+    }
+  });
+});
+
+describe('hasUnpublishedRejection', () => {
+  const hash = new Uint8Array(32).fill(7);
+  const none = new Uint8Array(32);
+
+  it('is true only for a recorded rejection whose text the API does not hold', () => {
+    const rejected = { disputedAt: 1500n, rejectionReasonHash: hash };
+    expect(hasUnpublishedRejection(rejected, { rejection: null })).toBe(true);
+    expect(hasUnpublishedRejection(rejected, { rejection: { reason: 'r', reasonHash: 'h' } })).toBe(
+      false,
+    );
+    // A dispute the developer opened records no reason.
+    expect(
+      hasUnpublishedRejection(
+        { disputedAt: 1500n, rejectionReasonHash: none },
+        { rejection: null },
+      ),
+    ).toBe(false);
+    expect(
+      hasUnpublishedRejection({ disputedAt: 0n, rejectionReasonHash: none }, { rejection: null }),
+    ).toBe(false);
+    expect(hasUnpublishedRejection(null, { rejection: null })).toBe(false);
   });
 });

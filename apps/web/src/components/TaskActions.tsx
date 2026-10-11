@@ -24,12 +24,16 @@ import {
   termsHash,
   toHex,
 } from '@taskra/sdk';
-import { type SyntheticEvent, useState } from 'react';
+import { type SyntheticEvent, useEffect, useRef, useState } from 'react';
 import type { TaskData } from '../hooks/use-task';
 import { useTransaction } from '../hooks/use-transaction';
 import { type ActionKind, availableActions } from '../lib/actions';
 import { formatUsdc } from '../lib/amounts';
-import { REJECTION_REASON_MAX, rejectionReasonProblem } from '../lib/rejection';
+import {
+  REJECTION_REASON_MAX,
+  rejectionReasonProblem,
+  saveRejectionReason,
+} from '../lib/rejection';
 import { useApp } from '../state/app-context';
 import { TxStatus } from './TxStatus';
 
@@ -48,6 +52,22 @@ const LABELS: Record<ActionKind, string> = {
 
 const SHA = /^[0-9a-fA-F]{40}$/;
 
+/**
+ * What became of the text of a rejection after its transaction. Separate from
+ * the transaction's own state on purpose: the transaction can be final while
+ * the text is not stored, and the page must be able to say both.
+ */
+type ReasonReport =
+  | { readonly phase: 'saving'; readonly signature: string; readonly reason: string }
+  | { readonly phase: 'saved' }
+  | {
+      readonly phase: 'failed';
+      readonly signature: string;
+      readonly reason: string;
+      readonly message: string;
+      readonly retryable: boolean;
+    };
+
 export function TaskActions({ data }: { readonly data: TaskData }) {
   const app = useApp();
   const tx = useTransaction(data.refresh);
@@ -56,6 +76,22 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
   const [lookup, setLookup] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [reasonReport, setReasonReport] = useState<ReasonReport | null>(null);
+  const savingReason = useRef(false);
+
+  // While the text of a rejection is not stored it exists only in this page.
+  // A reload or a closed tab would lose it, so the browser is asked to confirm.
+  const reasonAtRisk = reasonReport !== null && reasonReport.phase !== 'saved';
+  useEffect(() => {
+    if (!reasonAtRisk) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+    };
+  }, [reasonAtRisk]);
   const { detail, account, platform, chainTime } = data;
   const me = app.publicKey;
 
@@ -64,6 +100,7 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
     return <p className="muted">Connect a wallet to act on this task.</p>;
   }
   const task = new PublicKey(detail.taskAddress);
+  const taskId = detail.id;
   const myAddress = app.address;
   const { taskra, api } = app;
   const disabled = tx.busy;
@@ -284,12 +321,90 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
       setFormError(problem);
       return;
     }
-    void send(
-      [rejectTask(taskra, { client, task, reasonHash: rejectionReasonHash(reason) })],
-      'reject',
-      { reason },
-    );
+    const text = reason;
+    setFormError(null);
+    setReasonReport(null);
+    void (async () => {
+      if (!(await app.signIn())) return;
+      // The transaction is built and sent exactly as every other one. What is
+      // different is what follows: the text is saved by `saveReason`, which
+      // reports its own outcome instead of having a failure swallowed.
+      await tx.run(
+        [rejectTask(taskra, { client, task, reasonHash: rejectionReasonHash(text) })],
+        (signature) => saveReason(signature, text),
+      );
+    })();
   }
+
+  /** Sends the text for a rejection that is already on-chain. Never signs anything. */
+  async function saveReason(signature: string, text: string) {
+    // One request at a time: a second click, or a retry racing the first attempt, is ignored.
+    if (savingReason.current) return;
+    savingReason.current = true;
+    setReasonReport({ phase: 'saving', signature, reason: text });
+    try {
+      const result = await saveRejectionReason(api, taskId, signature, text);
+      if (result.saved) {
+        setReasonReport({ phase: 'saved' });
+      } else {
+        setReasonReport({
+          phase: 'failed',
+          signature,
+          reason: text,
+          message: result.message,
+          retryable: result.retryable,
+        });
+        // So that the retry signs in again instead of repeating a request that cannot succeed.
+        if (result.sessionExpired) await app.refreshSession();
+      }
+    } finally {
+      savingReason.current = false;
+      data.refresh();
+    }
+  }
+
+  async function retryReason() {
+    if (reasonReport?.phase !== 'failed' || !reasonReport.retryable) return;
+    const { signature, reason: text } = reasonReport;
+    // A message signature at most, and only if the session has ended. No transaction.
+    if (!(await app.signIn())) return;
+    await saveReason(signature, text);
+  }
+
+  const reasonPanel =
+    reasonReport === null ? null : reasonReport.phase === 'saving' ? (
+      <p className="notice notice-warn" role="status">
+        The rejection is on-chain. Saving its reason text with Taskra…
+      </p>
+    ) : reasonReport.phase === 'saved' ? (
+      <p className="notice" role="status">
+        The reason text is saved with Taskra.
+      </p>
+    ) : (
+      <div className="notice notice-error" role="alert">
+        <p className="tx-label">
+          The rejection is recorded on-chain, but its reason text was not saved.
+        </p>
+        <p>{reasonReport.message}</p>
+        <p>
+          The transaction succeeded and will not be sent again. Until the text is saved, nobody else
+          can read why the submission was rejected.
+        </p>
+        {reasonReport.retryable && (
+          <button type="button" onClick={() => void retryReason()}>
+            Try saving the reason again
+          </button>
+        )}
+        <label>
+          Your reason
+          <span className="hint">
+            Keep a copy. This text exists only on this page: if you reload or leave before it is
+            saved, it is gone, and only exactly the same text can be saved later.
+          </span>
+          <textarea readOnly rows={3} value={reasonReport.reason} />
+        </label>
+      </div>
+    );
 
   if (actions.length === 0) {
     return (
@@ -297,6 +412,7 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
         <h2 id="actions-title">Actions</h2>
         <p className="muted">There is nothing for this wallet to do on this task right now.</p>
         <TxStatus state={tx.state} />
+        {reasonPanel}
       </section>
     );
   }
@@ -409,6 +525,7 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
         </p>
       )}
       <TxStatus state={tx.state} />
+      {reasonPanel}
     </section>
   );
 }

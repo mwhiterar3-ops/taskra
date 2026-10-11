@@ -9,6 +9,7 @@ import { useTask } from '../../../hooks/use-task';
 import { formatDuration, formatTime, formatUsdc, shortAddress } from '../../../lib/amounts';
 import type { VerificationEntry } from '../../../lib/api';
 import { explorerUrl } from '../../../lib/env';
+import { hasUnpublishedRejection } from '../../../lib/rejection';
 import { useApp } from '../../../state/app-context';
 
 const TX_STATUS_TEXT = {
@@ -314,6 +315,14 @@ export default function TaskPage() {
               <p className="tx-label">Rejected by the client</p>
               <pre>{detail.rejection.reason}</pre>
             </div>
+          )}
+          {hasUnpublishedRejection(account, detail) && (
+            <p className="notice notice-warn">
+              The client rejected this submission. The hash of the reason is on-chain (
+              <span className="mono">{toHex(account.rejectionReasonHash).slice(0, 16)}…</span>), but
+              its text has not been saved with Taskra, so it cannot be shown. Only the client can
+              supply it.
+            </p>
           )}
         </section>
       )}
