@@ -191,7 +191,10 @@ Body `{ "prNumber": 42, "signature": "<submit_work signature, optional>" }`.
 Aggregates over **finalized** settlements, labelled `Off-chain aggregate`:
 developer and client counts and totals, the Reliable Contributor milestone
 (3 settled tasks from 3 distinct clients; no reward is attached), and the most
-recent verified work with settlement signatures.
+recent verified work with settlement signatures. `developer.tasksSettled` counts
+every settled task; `developer.tasksVerified` and `verifiedWork` include only
+settlements whose final submission carried a valid attestation. A task the
+client approved without verification is settled, not verified.
 
 ## 5. GitHub identity
 

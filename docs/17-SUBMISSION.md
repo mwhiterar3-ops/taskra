@@ -14,9 +14,9 @@ marked **not verified**.
 | Item | State |
 |---|---|
 | Integration branch (the baseline) | `integration/phases-3-9` at `11458a0`. Everything in this pack that predates the security remediation describes this commit |
-| Published branch | `publish/colosseum` at `e82eec5`, which a configured remote (`origin`) also carries. Its files are identical to `11458a0`. **It contains none of the security remediation** |
-| Remediation branch (current work) | `security/remediation-1`, created from `11458a0`. The remediation described in `15-SECURITY-AUDIT.md` §7 exists there as **uncommitted changes in the working tree**: reviewed by its authors only, not committed, not pushed |
-| Branch intended for publication | **Not decided.** Publishing the remediation means committing it and choosing where it goes (§9, item 5). Until then the published code has the defects §7 of the audit describes |
+| Published branch | `publish/colosseum`, the default branch of the configured remote (`origin`). Until it is advanced past `e82eec5` it contains none of the security remediation |
+| Remediation branch (current work) | `security/remediation-1`, created from `11458a0`. It holds the remediation described in `15-SECURITY-AUDIT.md` §7 as commits on top of `e82eec5` (the published history, not `11458a0`; the files of the two are identical). Reviewed by its authors only |
+| Branch intended for publication | `publish/colosseum`, by fast-forwarding it to the remediation branch. Whether that has happened is a fact about the remote: check that `publish/colosseum` contains the remediation commits before relying on it |
 | `main` | The older Phase 2 commit (`a969203`) |
 | Works on | A **local Solana validator** only |
 | Devnet | **Not deployed.** The deploy script has been dry-run only |
@@ -24,7 +24,7 @@ marked **not verified**.
 | Local stack over HTTP | Verified by script: validator + platform, API `/ready`, attestation service started, web app built with the local values and serving every route with status 200, CORS and the sign-in challenge correct for the web origin, no server secret anywhere in the web build |
 | Browser + wallet extension | **Not verified** by anyone. The pages are served and configured; connecting a wallet, signing and the on-page flows have never been clicked through |
 | Real GitHub OAuth and API | **Not verified**; automated runs use a fake GitHub |
-| Security | Self-reviewed in five passes (`15-SECURITY-AUDIT.md`); each later pass found problems in the code or in the fixes of the one before. **No independent audit. Not for real funds** |
+| Security | Self-reviewed in six passes (`15-SECURITY-AUDIT.md`); each later pass found problems in the code or in the fixes of the one before. **No independent audit. Not for real funds** |
 | Public repository | A remote named `origin` is configured and carries `publish/colosseum`. Whether that repository is public, and who can read it, was not checked from this machine |
 
 Re-verify before submitting:
@@ -33,7 +33,7 @@ Re-verify before submitting:
 pnpm install --frozen-lockfile
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 pnpm anchor:test
-pnpm e2e                 # about six minutes; ends "END-TO-END RUN PASSED: 189 checks"
+pnpm e2e                 # about six minutes; ends "END-TO-END RUN PASSED: 190 checks"
 ```
 
 ## 2. What to read from the Colosseum dashboard
@@ -103,7 +103,8 @@ Taskra replaces the intermediary with a program and a rule set:
    the hash of a GitHub pull request on-chain. The hash commits to the
    repository, the pull-request number and its head commit.
 3. **Verification.** An attestation service fetches the pull request from
-   GitHub and checks eleven rules: it targets the repository named in the task,
+   GitHub and checks twelve rules: it targets the repository named in the task
+   and its default branch,
    the repository pre-dates the task, it is merged, its author is the
    developer's linked GitHub identity, it was merged by someone else, it was
    merged inside the work window, its final commit names this task and the
@@ -187,7 +188,7 @@ limit** once known: the bracketed sections can be cut first.
 >
 > **How (1:00).** When the developer submits, they record a hash of their pull
 > request on-chain. Our verifier fetches that pull request from GitHub and
-> checks eleven rules — right repository, actually merged, merged by someone
+> checks twelve rules — right repository and default branch, actually merged, merged by someone
 > other than the author, inside the deadline, the hash matches, and the pull
 > request's own final commit names this task and the wallet to pay. If they all
 > hold it writes one attestation on-chain. That starts a review window. The
@@ -233,7 +234,7 @@ Setup: a terminal in `~/taskra`, font large enough to read.
 | 1:10 | `fee observed on-chain: 2.50 USDC`, `developer observed on-chain: 97.50 USDC`, `developer balance grew by 97.50 USDC` | These amounts are read from the finalized transaction's token balances, not computed |
 | 1:30 | Scenario B: `expire_review is refused before the review deadline`, then `API found the outcome transaction by itself` | The client disappears; after the window anyone settles; the API finds it without being told |
 | 1:50 | Scenario E: `PENDING … while GitHub is unavailable`, `rejected because the pull request is not merged (R4)`, `client refunded in full` | An outage is never a verdict; unverified work ends in a refund |
-| 2:10 | Scenario G: `the attester refuses to start with a key the platform does not name` and the final `END-TO-END RUN PASSED: 189 checks` | The services as real processes |
+| 2:10 | Scenario G: `the attester refuses to start with a key the platform does not name` and the final `END-TO-END RUN PASSED: 190 checks` | The services as real processes |
 | 2:25 | `scripts/mutation-check-services.sh` result line, or `docs/15-SECURITY-AUDIT.md` §4 | We break our own code on purpose; all are caught. Self-reviewed, not audited |
 
 State on camera or in a caption: **local validator, test wallets, fake GitHub in

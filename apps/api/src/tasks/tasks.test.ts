@@ -1021,7 +1021,12 @@ describe('listing and reputation', () => {
     const developer = createWallet();
     const reputation = async () =>
       (await harness.get(`/api/v1/users/${developer.address}/reputation`)).json<{
-        developer: { tasksSettled: number; distinctClients: number; totalEarned: string };
+        developer: {
+          tasksSettled: number;
+          tasksVerified: number;
+          distinctClients: number;
+          totalEarned: string;
+        };
         reliableContributor: { qualified: boolean; label: string };
         verifiedWork: { taskId: string }[];
       }>();
@@ -1042,6 +1047,7 @@ describe('listing and reputation', () => {
     const result = await reputation();
     expect(result.developer).toEqual({
       tasksSettled: 3,
+      tasksVerified: 0,
       tasksRefunded: 0,
       tasksDisputed: 0,
       distinctClients: 3,
@@ -1051,7 +1057,63 @@ describe('listing and reputation', () => {
       qualified: true,
       label: 'Off-chain aggregate',
     });
-    expect(result.verifiedWork).toHaveLength(3);
+    // R-1: the three were approved by their clients without ever being
+    // verified. They are settled work; none of them is verified work.
+    expect(result.verifiedWork).toEqual([]);
+  });
+
+  // R-1: anyone can fund a task from one wallet, accept it from another and
+  // approve whatever was submitted. That must never read as verified work.
+  it('lists a settlement as verified work only if its submission was attested', async () => {
+    const developer = createWallet();
+    const reputation = async () =>
+      (await harness.get(`/api/v1/users/${developer.address}/reputation`)).json<{
+        developer: { tasksSettled: number; tasksVerified: number };
+        verifiedWork: { taskId: string }[];
+      }>();
+
+    const unverified = await scenario('SUBMITTED', developer);
+    approveOnChain(unverified, { finalized: true });
+    await getTask(unverified.task.id);
+
+    // Attested for a submission that was then replaced: no longer valid.
+    const superseded = await scenario('SUBMITTED', developer);
+    superseded.account = {
+      ...superseded.account,
+      submissionNonce: 2n,
+      attestedNonce: 1n,
+      attestedHash: superseded.account.evidenceHash,
+      verifiedAt: 1_760_000_300n,
+    };
+    approveOnChain(superseded, { finalized: true });
+    await getTask(superseded.task.id);
+
+    const verified = await scenario('SUBMITTED', developer);
+    verified.account = {
+      ...verified.account,
+      state: 'UNDER_REVIEW',
+      attestedNonce: verified.account.submissionNonce,
+      attestedHash: verified.account.evidenceHash,
+      verifiedAt: 1_760_000_300n,
+      reviewDeadline: 1_760_173_100n,
+    };
+    approveOnChain(verified, { finalized: true });
+    await getTask(verified.task.id);
+
+    const result = await reputation();
+    expect(result.developer).toMatchObject({ tasksSettled: 3, tasksVerified: 1 });
+    expect(result.verifiedWork.map((work) => work.taskId)).toEqual([verified.task.id]);
+    const stored = await harness.admin.query<{ task_id: string; attested: boolean }>(
+      `SELECT task_id, attested FROM settlements WHERE developer_wallet = $1`,
+      [developer.address],
+    );
+    expect(new Map(stored.rows.map((row) => [row.task_id, row.attested]))).toEqual(
+      new Map([
+        [unverified.task.id, false],
+        [superseded.task.id, false],
+        [verified.task.id, true],
+      ]),
+    );
   });
 
   it('reports whether a wallet has signed in', async () => {

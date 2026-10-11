@@ -87,6 +87,7 @@ export interface Reputation {
   readonly wallet: string;
   readonly developer: {
     tasksSettled: number;
+    tasksVerified: number;
     tasksRefunded: number;
     tasksDisputed: number;
     distinctClients: number;

@@ -126,6 +126,7 @@ describe('migrations', () => {
       '1760200000000_transactions-per-task',
       '1760300000000_verified-result-matches-registration',
       '1760400000000_settlement-amounts-add-up',
+      '1760500000000_settlement-attested',
     ]);
     const tables = await owner.query<{ tablename: string }>(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
@@ -157,7 +158,7 @@ describe('migrations', () => {
         migrationsTable: 'pgmigrations',
         log: () => undefined,
       };
-      await runner({ ...options, direction: 'down', count: 5 });
+      await runner({ ...options, direction: 'down', count: 6 });
       const client = new pg.Client({ connectionString: scratch.url });
       await client.connect();
       const afterDown = await client.query(

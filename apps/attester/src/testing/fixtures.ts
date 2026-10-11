@@ -94,6 +94,8 @@ export function mergedPullRequest(patch: Partial<PullRequest> = {}): PullRequest
     mergedBy: { id: MAINTAINER_GITHUB_ID, login: 'maintainer' },
     baseRepo: 'Octo-Org/Parser',
     baseRepoCreatedAt: '2020-01-01T00:00:00Z',
+    baseRef: 'main',
+    baseDefaultBranch: 'main',
     ...patch,
   };
 }

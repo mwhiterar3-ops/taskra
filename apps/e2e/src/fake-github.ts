@@ -85,7 +85,10 @@ export class FakeGithub {
         user: found.author,
         merged_by: found.mergedBy,
         head: { sha: found.headSha },
-        base: { repo: { full_name: pull[1], created_at: REPO_CREATED_AT } },
+        base: {
+          ref: 'main',
+          repo: { full_name: pull[1], created_at: REPO_CREATED_AT, default_branch: 'main' },
+        },
       });
     }
     const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(url.pathname);

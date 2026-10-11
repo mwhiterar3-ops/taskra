@@ -11,6 +11,7 @@ import {
   computeFee,
   decodeProgramError,
   findEscrowAddress,
+  hasValidAttestation,
   type InstructionName,
   isTerminalState,
   type TaskAccount,
@@ -322,8 +323,8 @@ async function recordSettlement(deps: AppDeps, row: TaskRow): Promise<void> {
       await client.query(
         `INSERT INTO settlements (task_id, signature, state, outcome, client_wallet,
                 developer_wallet, amount, fee_amount, developer_amount, client_amount, disputed,
-                accepted_at, closed_at, slot)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                accepted_at, closed_at, slot, attested)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT (task_id) DO NOTHING`,
         [
           row.id,
@@ -340,6 +341,9 @@ async function recordSettlement(deps: AppDeps, row: TaskRow): Promise<void> {
           fromUnix(account.acceptedAt),
           fromUnix(account.closedAt) ?? now,
           transaction.slot,
+          // Whether the submission that was settled had been verified. A client
+          // may approve one that never was; that is settled work, not verified work.
+          hasValidAttestation(account),
         ],
       );
       await writeCache(client, row, finalized, now);

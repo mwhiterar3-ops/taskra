@@ -207,6 +207,18 @@ mutate "39. the API starts although its database login was refused" \
   's/    process\.exit\(1\);\n  \}\n\}\nconst app/  }\n}\nconst app/' \
   apps/api/src/main.ts
 
+mutate "40. a pull request merged into any branch is verified (R13)" \
+  's/pr\.baseRef === pr\.baseDefaultBranch/true/' \
+  apps/attester/src/rules.ts
+
+mutate "41. work that was never attested is listed as verified work (R-1)" \
+  's/ AND s\.attested\n/\n/' \
+  apps/api/src/users/routes.ts
+
+mutate "42. every settlement is recorded as attested (R-1)" \
+  's/hasValidAttestation\(account\),\n        \],/true,\n        ],/' \
+  apps/api/src/tasks/reconcile.ts
+
 mutate "23. the API accepts the attester key on a deployed origin" \
   's/!local\(config\) \|\|/false ||/' \
   apps/api/src/config.ts

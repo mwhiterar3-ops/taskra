@@ -3,7 +3,8 @@
 **This is a self-review by the people who wrote the code, not an independent
 audit.** A second self-review after publication (§7) found three medium and
 several low findings that this first one missed; a fourth (§7.7) found that one
-of the fixes was incomplete; a fifth (§7.8) verified the result from a fresh clone. It records what was examined, what was found, what was fixed and what
+of the fixes was incomplete; a fifth (§7.8) verified the result from a fresh clone. A sixth
+(§7.9) found that unverified work was being listed as verified. It records what was examined, what was found, what was fixed and what
 remains. Passing tests are evidence that specific behaviours hold; they are not
 a claim that the system is secure. Taskra must not hold real funds on the
 strength of this document.
@@ -329,8 +330,8 @@ escrow untouched. That is a statement about what was tried.
 | L-05 | `apps/api/src/config.ts`, `auth/routes.ts`, `github/routes.ts` | `app.test.ts`: non-https deployed origin refused; attester key refused on a deployed origin for every `NODE_ENV`. `auth.test.ts`: cookie is `Secure` on https with `NODE_ENV=test` | Configuration and HTTP |
 
 `scripts/mutation-check.sh` now seeds 10 defects (two for the bounds) and
-`scripts/mutation-check-services.sh` 39 (twenty-three for the fixes in 7.2,
-7.5, 7.7 and 7.8). Run them to see whether the suites still catch each one; the last
+`scripts/mutation-check-services.sh` 42 (twenty-six for the fixes in 7.2,
+7.5, 7.7, 7.8 and 7.9). Run them to see whether the suites still catch each one; the last
 recorded run is in 7.7.
 
 ### 7.3 Deliberately not changed
@@ -578,3 +579,52 @@ section was written afterwards and is the only difference from what was run.
 | `scripts/test-deploy-guards.sh` | **Blocked: 6 of 11 checks passed, 5 could not run.** They need the owner's program keypair, which is git-ignored and absent from any clone, as the script's header says. All 11 pass in the working tree that holds the keypair |
 | `pnpm db:up` | **Could not run**: no Docker in the environment |
 | Devnet, a browser wallet, real GitHub OAuth and API | **Not exercised** |
+
+### 7.9 Sixth pass: after the remediation was committed
+
+The committed remediation (`74d7140`) was reviewed again, read-only, aiming at
+code the earlier passes had not read closely and at the published baseline.
+**The reviewer wrote most of the remediation. This is not an independent
+review.** Two findings were then fixed; the rest are open and listed here so
+that nothing reads as closed that is not.
+
+| ID | Severity | Finding | Evidence | Status |
+|---|---|---|---|---|
+| R-1 | Medium | Every settled task was listed as "Verified work" and counted toward a developer's record, whether or not it had ever been verified. A client may approve an unattested submission, so one person with four wallets could produce three "verified" tasks and the Reliable Contributor milestone with no GitHub evidence, for the price of transaction fees. | Confirmed from the code; the suite's own test asserted three never-attested tasks as verified work | **Fixed as to the label.** A settlement records whether its final submission carried a valid attestation; only those are listed as verified work and counted in `tasksVerified` (`13-DECISIONS.md` §17.8). **Not fixed:** settled counts, total earned and the milestone still count unverified and self-dealt settlements |
+| R-2 | Medium | The public default branch did not contain the remediation while the public remediation branch described the defects. | Confirmed from the remote | A matter of publication, not of code. See the remote for the current state |
+| R-3 | Medium (was L-03, Low) | A pull request merged into any branch counted. With write access through a second account, a developer could create a branch, merge into it and be verified; if the client is absent, or rejects and the authority is silent, verified work is paid. | From the code; never run against the real GitHub | **Narrowed.** R13 requires the base branch to be the repository's default branch. A second account or a bot allowed to merge into the default branch still satisfies R6 |
+| R-4 | Medium | The sign-in message can be relayed (M-04). | Known | **Open** |
+| R-5 | Low | Any signed-in wallet can report a transaction for any task. A stranger can send failing Taskra instructions that name someone's task and report them; each is stored and returned in an unbounded list on the task page. | From the code; not executed | **Open** |
+| R-6 | Low | Evidence is registered from a `confirmed` read and the row's hash can never change. If that submission is dropped and a different one lands with the same nonce, registration answers `STALE_SUBMISSION` for good. | Reasoned; not reproduced | **Open** |
+| R-7 | Low | The text of a rejection reason is stored once, at `confirmed`, and never replaced. Same cause as R-6. | Reasoned | **Open** |
+| R-8 | Low | Migration `1760300000000` was edited before it was first committed. A database that applied the earlier draft keeps the weaker trigger; `1760400000000` fails on a database holding settlement rows that do not add up. | Confirmed; affects only databases migrated from uncommitted work | **Open.** Rebuild such a database |
+| R-9 | Low | The API's login check runs once, at startup; it does not look at `pg_write_server_files` or `pg_execute_server_program`; the attestation service has no such check. | From the code | **Open** |
+| R-10 | Low | A plain-http RPC endpoint is accepted for a remote host. The attestation service takes the developer wallet that R5 and R12 are judged against from its RPC endpoint. | Reasoned | **Open** |
+| R-11 | Low | The API's database role can insert settlement records (L-09). | Known | **Open** |
+| R-12 | Info | The attestation service pays the fee of every attestation and nothing watches its balance. | From the code | Open |
+| R-13 | Info | The OAuth `code` and `state` are probably written to the request log; only headers are redacted. | Assumed from the framework's defaults | Open |
+
+No way to move or lock escrowed funds without authorization was found in this
+pass either. That is a statement about what was looked for.
+
+| Fix | Where | Regression tests | Kind of test |
+|---|---|---|---|
+| R-1 | `apps/api/migrations/1760500000000_settlement-attested.sql`, `apps/api/src/tasks/reconcile.ts`, `users/routes.ts`, `apps/web/src/app/profile/[wallet]/page.tsx` | `tasks.test.ts` "lists a settlement as verified work only if its submission was attested" (never attested; attested for a superseded submission; attested). `pnpm e2e` scenario A: the attested, settled task is listed | Reconciliation path with a stand-in chain; and a real Task account on a local validator |
+| R-3 | `apps/attester/src/rules.ts` (R13), `github.ts` | `rules.test.ts`: a base branch other than the default one is REJECTED on R13 alone; `github.test.ts` | Unit, against a stand-in GitHub |
+
+Run on the tree that was committed, in the working repository (dependencies and
+build output already present; **not** a fresh clone this time):
+
+| Check | Result |
+|---|---|
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build` | Passed |
+| `pnpm test` | Passed: 642 tests (SDK 216, shared 52, API 194, attestation service 117, web 63) |
+| `pnpm anchor:fmt`, `pnpm anchor:lint`, `pnpm anchor:build`, `cargo test --workspace` | Passed: 119 program tests on LiteSVM. The program did not change in this pass |
+| `scripts/test-deploy-guards.sh` | Passed: 11 checks |
+| `pnpm e2e` | Passed: 190 checks on a local validator |
+| `scripts/mutation-check-services.sh` | Run after this text was written; see the commit that follows it, or run it |
+| `scripts/mutation-check.sh`, `pnpm sdk:validator-loop` | Not run again: nothing they cover changed |
+| Devnet, a browser wallet, real GitHub OAuth and API | **Not exercised** |
+
+The program is not deployed: no account exists at its declared address on
+devnet, testnet or mainnet-beta (looked up on 2026-10-10).

@@ -123,7 +123,7 @@ an unverified submission, and the verification panel shows which rule failed.
 | 5 | Open the task → **Accept task** | State `ACCEPTED`; work deadline shown |
 | 6 | On GitHub, open a pull request from the developer's account whose **final commit message ends with the two `Taskra-Task:` / `Taskra-Developer:` lines shown on the task page**; have the other account merge it | — |
 | 7 | **Submit evidence**: PR number → **Look up head commit** → **Record evidence on-chain** | State `SUBMITTED`; verification "Pending" |
-| 8 | Wait about 30 s | Verification "Verified", rules R1–R9, R11 and R12 ticked, head and merge commit shown, on-chain attestation `FINALIZED`; state `UNDER_REVIEW` |
+| 8 | Wait about 30 s | Verification "Verified", rules R1–R9 and R11–R13 ticked, head and merge commit shown, on-chain attestation `FINALIZED`; state `UNDER_REVIEW` |
 | 9 | Switch to the client → **Approve and pay developer** | After finality: "Finalized: approved — Developer received 97.50 USDC · treasury 2.50 USDC", with a link to the transaction |
 | 10 | Open the developer's profile | Tasks settled 1, total earned 97.50 USDC, the task under "Verified work" |
 

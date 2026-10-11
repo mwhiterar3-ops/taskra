@@ -67,12 +67,13 @@ function failed(verdict: Verdict): string[] {
 }
 
 describe('evaluateEvidence', () => {
-  it('is VERIFIED when R1–R9, R11 and R12 all hold', () => {
+  it('is VERIFIED when R1–R9 and R11–R13 all hold', () => {
     const verdict = evaluate(ok(mergedPullRequest()));
     expect(verdict.status).toBe('VERIFIED');
     expect(verdict.rules.map((rule) => rule.rule)).toEqual([
       'R1',
       'R2',
+      'R13',
       'R3',
       'R4',
       'R5',
@@ -90,6 +91,9 @@ describe('evaluateEvidence', () => {
   it.each<[string, Partial<PullRequest>, string[]]>([
     ['R2: targets another repository', { baseRepo: 'octo-org/other' }, ['R2']],
     ['R2: the repository was renamed', { baseRepo: 'new-org/parser' }, ['R2']],
+    // R-3: a branch anyone with write access can create and merge into.
+    ['R13: merged into a branch that is not the default one', { baseRef: 'develop' }, ['R13']],
+    ['R13: the default branch is another one', { baseDefaultBranch: 'trunk' }, ['R13']],
     [
       'R3: the repository is newer than the task',
       { baseRepoCreatedAt: iso(task.createdAt) },

@@ -39,6 +39,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: AppDeps): void {
       tasks_disputed: string;
       distinct_clients: string;
       total_earned: string;
+      tasks_verified: string;
     }>(`SELECT * FROM developer_reputation WHERE wallet = $1`, [wallet]);
     const client = await pool.query<{
       tasks_settled: string;
@@ -58,7 +59,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: AppDeps): void {
     }>(
       `SELECT s.task_id, t.title, t.repo, s.developer_amount, s.signature, s.closed_at
          FROM settlements s JOIN tasks t ON t.id = s.task_id
-        WHERE s.developer_wallet = $1 AND s.state = 'SETTLED'
+        WHERE s.developer_wallet = $1 AND s.state = 'SETTLED' AND s.attested
         ORDER BY s.closed_at DESC LIMIT 20`,
       [wallet],
     );
@@ -73,6 +74,8 @@ export function registerUserRoutes(app: FastifyInstance, deps: AppDeps): void {
       basis: { commitment: 'finalized', kind: 'Off-chain aggregate' },
       developer: {
         tasksSettled: settled,
+        /** Settled tasks whose final submission carried a valid attestation. */
+        tasksVerified: Number(dev?.tasks_verified ?? 0),
         tasksRefunded: Number(dev?.tasks_refunded ?? 0),
         tasksDisputed: Number(dev?.tasks_disputed ?? 0),
         distinctClients,

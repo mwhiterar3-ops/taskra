@@ -96,6 +96,8 @@ function Profile() {
         <dl className="facts">
           <dt>Tasks settled</dt>
           <dd>{developer.tasksSettled}</dd>
+          <dt>Of which verified</dt>
+          <dd>{developer.tasksVerified}</dd>
           <dt>Settled of finished</dt>
           <dd>
             {finished === 0 ? '—' : `${String(developer.tasksSettled)} of ${String(finished)}`}
@@ -118,7 +120,10 @@ function Profile() {
         </dl>
         <h3>Verified work</h3>
         {reputation.verifiedWork.length === 0 ? (
-          <p className="muted">No settled tasks yet.</p>
+          <p className="muted">
+            No verified work yet. A task a client approved without verification is counted as
+            settled above and is not listed here.
+          </p>
         ) : (
           <ul className="plain">
             {reputation.verifiedWork.map((work) => (

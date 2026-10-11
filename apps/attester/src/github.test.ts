@@ -11,7 +11,12 @@ const PULL = {
   head: { sha: '0123456789ABCDEF0123456789abcdef01234567', ref: 'feature' },
   base: {
     ref: 'main',
-    repo: { full_name: 'Octo-Org/Parser', created_at: '2020-01-01T00:00:00Z', private: false },
+    repo: {
+      full_name: 'Octo-Org/Parser',
+      created_at: '2020-01-01T00:00:00Z',
+      default_branch: 'main',
+      private: false,
+    },
   },
   // Untrusted extras a hostile repository controls; never read.
   title: '<script>alert(1)</script>',
@@ -58,6 +63,8 @@ describe('GitHub client', () => {
         mergedBy: { id: 2002, login: 'maintainer' },
         baseRepo: 'Octo-Org/Parser',
         baseRepoCreatedAt: '2020-01-01T00:00:00Z',
+        baseRef: 'main',
+        baseDefaultBranch: 'main',
       },
       meta: {
         endpoint: 'GET /repos/octo-org/parser/pulls/42',

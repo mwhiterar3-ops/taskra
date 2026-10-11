@@ -13,7 +13,7 @@ evidence, and settlement builds the developer's reputation.
 | Locally functional | Yes. Program, SDK, API, database, attestation service and web app work together on a local validator; `pnpm e2e` drives every journey end to end. |
 | Devnet-tested | **No.** Nothing has been deployed to any public cluster. The deploy script has only been dry-run. |
 | Production-deployed | **No.** |
-| Security | Self-reviewed by its authors, in five passes ([docs/15-SECURITY-AUDIT.md](docs/15-SECURITY-AUDIT.md)); the second review found a fund-locking input, unbound evidence and a way to suppress settlement records, since fixed. **No independent audit.** Not for real funds. |
+| Security | Self-reviewed by its authors, in six passes ([docs/15-SECURITY-AUDIT.md](docs/15-SECURITY-AUDIT.md)); the second review found a fund-locking input, unbound evidence and a way to suppress settlement records, since fixed. **No independent audit.** Not for real funds. |
 
 Not yet exercised by anyone: the web app in a real browser with a wallet
 extension, and the GitHub steps against the real GitHub (the suites use a fake).
@@ -120,7 +120,7 @@ their `PUBLIC` / `SERVER_ONLY` / `SECRET` labels:
 | `pnpm sdk:validator-loop` | The SDK against a real `solana-test-validator` | Solana CLI |
 | `pnpm e2e` | The whole system against a local validator: nine scenarios, about seven minutes | Solana CLI |
 | `scripts/mutation-check.sh` | Ten seeded defects in the program; all must be caught | Clean tree |
-| `scripts/mutation-check-services.sh` | Thirty-nine seeded defects in the API, attester and web logic; all must be caught | Clean tree |
+| `scripts/mutation-check-services.sh` | Forty-two seeded defects in the API, attester and web logic; all must be caught | Clean tree |
 | `scripts/test-deploy-guards.sh` | The devnet deploy script refuses unsafe configurations; dry run only | The owner's program keypair (git-ignored; not available in a fresh clone) |
 
 Everything in this table except the last row runs from a fresh clone: the

@@ -110,7 +110,7 @@ code that can load the attester key.
    - **P2** this is the task's current submission (same nonce and hash) and the
      task is `SUBMITTED`;
    - **P3** the on-chain clock has not passed `verification_deadline`.
-4. Fetch the pull request and evaluate R1–R9 (`13-DECISIONS.md` §10.1). The
+4. Fetch the pull request and evaluate R1–R9 and R13 (`13-DECISIONS.md` §10.1). The
    evidence hash is recomputed from the task's repository, the pull-request
    number and GitHub's own head SHA.
 5. Fetch the head commit by that SHA (`GET /repos/{repo}/commits/{sha}`) and
@@ -127,7 +127,8 @@ code that can load the attester key.
 
 | Situation | Result |
 |---|---|
-| All of R1–R9, R11 and R12 hold | `VERIFIED` → one attestation |
+| All of R1–R9 and R11–R13 hold | `VERIFIED` → one attestation |
+| Merged into a branch that is not the repository's default branch | `REJECTED` on R13 |
 | A merged pull request that does not name the task and the developer wallet in its head commit (an unrelated pull request) | `REJECTED` on R11 and/or R12 |
 | The head commit names another task, two tasks, another wallet or two wallets | `REJECTED` on R11 or R12 |
 | Unmerged, self-merged, wrong author, wrong repository, merged outside the window | `REJECTED`, with the failed rules |

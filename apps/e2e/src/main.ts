@@ -345,8 +345,14 @@ async function scenarioApprove(): Promise<{
   const reputation = await p.client.call<{
     developer: { tasksSettled: number; totalEarned: string; distinctClients: number };
     reliableContributor: { label: string; qualified: boolean };
+    verifiedWork: { taskId: string }[];
   }>('GET', `/api/v1/users/${p.developer.address}/reputation`);
   check('reputation: one settled task', reputation.developer.tasksSettled, 1);
+  check(
+    'reputation: the attested task is listed as verified work',
+    reputation.verifiedWork.map((work) => work.taskId),
+    [task.id],
+  );
   check('reputation: total earned', reputation.developer.totalEarned, (AMOUNT - FEE).toString());
   check(
     'reputation milestone is labelled off-chain',

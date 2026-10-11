@@ -39,6 +39,10 @@ export interface PullRequest {
   /** `owner/name` of the repository the pull request targets, as GitHub spells it. */
   readonly baseRepo: string;
   readonly baseRepoCreatedAt: string;
+  /** The branch the pull request was opened against. */
+  readonly baseRef: string;
+  /** The repository's default branch, as GitHub reports it now. */
+  readonly baseDefaultBranch: string;
 }
 
 /** A commit, as far as verification needs it. Its message is fixed by its SHA. */
@@ -71,7 +75,12 @@ const pullRequestSchema = z.object({
   merged_by: user.nullable().optional(),
   head: z.object({ sha }),
   base: z.object({
-    repo: z.object({ full_name: z.string().min(3).max(200), created_at: timestamp }),
+    ref: z.string().min(1).max(255),
+    repo: z.object({
+      full_name: z.string().min(3).max(200),
+      created_at: timestamp,
+      default_branch: z.string().min(1).max(255),
+    }),
   }),
 });
 
@@ -165,6 +174,8 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
           mergedBy: pr.merged_by ?? null,
           baseRepo: pr.base.repo.full_name,
           baseRepoCreatedAt: pr.base.repo.created_at,
+          baseRef: pr.base.ref,
+          baseDefaultBranch: pr.base.repo.default_branch,
         };
       }),
     getRepository: (repo) =>

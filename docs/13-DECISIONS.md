@@ -41,6 +41,8 @@ implementation details chosen under the owner's delegated judgment.
 | D26 | Dispute default | Unchanged from D6 after review: when the authority does not resolve a dispute in time, verified work is paid and unverified work is refunded. The alternatives and the reasoning are in §17.3. |
 | D27 | Settlement records | A settlement record is the task's own `amount` and fee, divided as the program divides them, written only when the outcome instruction's own escrow transfers bear that out. Tokens swept out of an escrow beyond the task amount are not earnings. A transaction is recorded once per task it concerns. A settlement invoked through another program is not recorded (§17.4). |
 | D28 | Correction and verification | A VERIFIED result can exist only for the pull-request number registered at the moment it is recorded. The database enforces it by rewriting the submission row when a VERIFIED result is inserted (§17.5). |
+| D30 | Default branch only | A pull request counts only if it was merged into the repository's default branch (rule R13, §17.8). |
+| D31 | Verified work | A settlement is listed as verified work only if the task's final submission carried a valid attestation. Settled and verified are different facts (§17.8). |
 | D29 | The API's database login | On a deployment the API refuses to start with a login that could write a verification result or an attestation record: a superuser, a role administrator, an owner of the schema's tables, a member of `taskra_attester`, or any login holding such a privilege by another route. It fails closed and has no off switch. Role names alone separate nothing (§17.6). |
 | D23 | Deploy profiles | Time windows are deploy-time configuration, immutable after `initialize_platform`. Production and devnet-demo values are in §15. |
 
@@ -721,6 +723,7 @@ Implemented off-chain in Phase 4.
 | R10 | Any GitHub API failure, rate limit or timeout. | PENDING, retryable; never VERIFIED |
 | R11 | The message of the pull request's head commit contains exactly one distinct `Taskra-Task:` line, and it names this task's UUID. | REJECTED |
 | R12 | The same message contains exactly one distinct `Taskra-Developer:` line, and it names the task's on-chain developer wallet (case-sensitive). | REJECTED |
+| R13 | The pull request's base branch is the repository's default branch, as GitHub reports it when the pull request is checked. | REJECTED |
 
 The verifier never trusts a hash, head SHA or repository name supplied in a
 request: it fetches the PR from GitHub, recomputes the hash itself and compares
@@ -731,7 +734,7 @@ these conditions; it does not claim a merged PR proves the work is correct.
 
 ### 10.2 Statuses
 
-`PENDING`, `VERIFIED` (all of R1–R9, R11 and R12 hold), `REJECTED` (at least one
+`PENDING`, `VERIFIED` (all of R1–R9 and R11–R13 hold), `REJECTED` (at least one
 of them fails on real data). Every result stores which rules passed and failed.
 
 ### 10.3 Evidence hash (D21)
@@ -1168,3 +1171,29 @@ without verifying again, so whoever obtains *its* login can make it sign.
   signatures of the task (L-07), or it was made through another program and the
   RPC node did not report inner instructions. Reporting the signature to the
   API recovers the first.
+
+### 17.8 Two rules added by the sixth pass (D30, D31)
+
+**Default branch only (R13).** Rule R2 checked the repository and not the
+branch. Anyone with write access can create a branch and merge a pull request
+into it, which sidesteps whatever review the default branch requires. A pull
+request now counts only if its base branch is the repository's default branch.
+This narrows L-03 and does not close it: a second account or a bot with the
+right to merge into the default branch still satisfies R6, the default branch
+is whatever the repository says it is on the day of the check, and a
+repository whose real integration branch is not its default cannot be used.
+
+**Settled is not verified (D31).** A task can be settled without ever being
+verified: the client may approve a submission that was never attested, and the
+authority may decide a dispute for the developer. Every settled task used to be
+listed under "Verified work", so one person with a few wallets could produce a
+verified-work record with no evidence at all. A settlement now records whether
+the task's final submission carried a valid attestation, read from the
+finalized Task account, and only those are listed as verified and counted in
+`tasksVerified`.
+
+What this does not change: `tasksSettled`, `totalEarned`, `distinctClients` and
+the Reliable Contributor milestone still count every settled task, verified or
+not, because that is how the milestone is defined. They can be produced by one
+person paying themselves between wallets for the price of the fee. They say
+that settlements happened, not that anyone independent was satisfied.

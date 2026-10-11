@@ -110,7 +110,8 @@ instruction.
 onchain_transactions**, `state` (`SETTLED` | `REFUNDED` | `CANCELLED`),
 `outcome`, `client_wallet`, `developer_wallet`, `amount`, `fee_amount`,
 `developer_amount`, `client_amount`, `disputed`, `accepted_at`, `closed_at`,
-`slot`, `recorded_at`. Indexes: `developer_wallet`, `client_wallet`.
+`slot`, `recorded_at`, `attested` (whether the task's final submission carried a
+valid attestation; false for rows older than the column). Indexes: `developer_wallet`, `client_wallet`.
 Written only from a transaction and a Task account both read at `finalized`.
 `fee_amount`, `developer_amount` and `client_amount` always add up to `amount`
 (`CHECK settlements_amounts_add_up`): tokens swept out of the escrow beyond the
@@ -168,7 +169,7 @@ FK → verification_results**, `task_id` **FK → tasks**, `evidence_hash`,
 
 ### Views
 `developer_reputation(wallet, tasks_settled, tasks_refunded, tasks_disputed,
-distinct_clients, total_earned)` and `client_reputation(wallet, tasks_settled,
+distinct_clients, total_earned, tasks_verified)` and `client_reputation(wallet, tasks_settled,
 tasks_refunded, tasks_cancelled, tasks_disputed, distinct_developers,
 total_paid)`, both over `settlements`.
 
@@ -238,8 +239,10 @@ login that is accepted at startup can be given more privileges afterwards.
   `1760100000000_evidence-correction` (the `submissions` correction rule),
   `1760200000000_transactions-per-task` (one transaction, several tasks),
   `1760300000000_verified-result-matches-registration` (a VERIFIED result only
-  for the registered number) and `1760400000000_settlement-amounts-add-up` (a
-  settlement divides the task amount and nothing else).
+  for the registered number), `1760400000000_settlement-amounts-add-up` (a
+  settlement divides the task amount and nothing else) and
+  `1760500000000_settlement-attested` (settled and verified are recorded
+  separately).
 - `pnpm db:migrate` applies pending migrations; it needs a login that can create
   roles (the docker-compose user can).
 - Migrations are forward-only in any environment holding data. The `Down`

@@ -160,6 +160,8 @@ export function createWorker(deps: WorkerDeps): Worker {
           details.slot,
           JSON.stringify({
             calls: details.calls,
+            baseRef: pr?.baseRef ?? null,
+            defaultBranch: pr?.baseDefaultBranch ?? null,
             // What the head commit said, kept so a result can be re-examined later.
             headCommitTrailers:
               details.headCommit?.kind === 'ok'

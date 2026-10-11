@@ -14,7 +14,7 @@ import {
 } from '@taskra/sdk';
 import type { Commit, GithubOutcome, PullRequest, Repository } from './github.js';
 
-export const RULESET_VERSION = 'taskra-rules-v2';
+export const RULESET_VERSION = 'taskra-rules-v3';
 
 export type VerificationStatus = 'VERIFIED' | 'REJECTED' | 'PENDING';
 
@@ -155,7 +155,7 @@ export interface EvidenceInput {
   readonly headCommit: GithubOutcome<Commit> | null;
 }
 
-/** R1–R12. Call only after `checkPreconditions` returned `proceed`. */
+/** R1–R13. Call only after `checkPreconditions` returned `proceed`. */
 export function evaluateEvidence(
   input: EvidenceInput,
   preconditions: readonly RuleResult[],
@@ -193,6 +193,18 @@ export function evaluateEvidence(
     targetsRepo
       ? pass('R2', `The pull request targets ${input.repo}.`)
       : fail('R2', `The pull request targets ${pr.baseRepo}, not ${input.repo}.`),
+  );
+
+  // R13: merged into the default branch, the one a repository's review and
+  // protection rules are about. Otherwise anyone with write access could
+  // create a branch, merge into it and present that as accepted work.
+  rules.push(
+    pr.baseRef === pr.baseDefaultBranch
+      ? pass('R13', `The pull request targets the default branch (${pr.baseRef}).`)
+      : fail(
+          'R13',
+          `The pull request targets ${pr.baseRef}, not the default branch (${pr.baseDefaultBranch}).`,
+        ),
   );
 
   const repoCreated = unixSeconds(pr.baseRepoCreatedAt);
