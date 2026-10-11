@@ -1,0 +1,65 @@
+# Quality gates for pull requests into the default branch.
+#
+# Static checks, the web app's tests and its production build. Nothing here
+# needs a secret, a database, a validator or network access beyond the package
+# registry: the web tests use fakes, and a build made without NEXT_PUBLIC_*
+# values is valid (the app then says it is not configured).
+#
+# Not run here: the API and attestation-service suites, the program tests and
+# the end-to-end scenarios (see README, "Testing"). Run those locally when a
+# change touches what they cover.
+name: CI
+
+on:
+  pull_request:
+    branches: [publish/colosseum]
+  push:
+    branches: [publish/colosseum]
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Third-party actions are pinned to a commit, not a tag that can move.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Version comes from the `packageManager` field of package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies (committed lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Web tests
+        run: pnpm --filter @taskra/web test
+
+      - name: Web production build
+        run: pnpm --filter @taskra/web build
