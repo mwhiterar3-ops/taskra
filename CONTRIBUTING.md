@@ -8,6 +8,22 @@ other or on the parts that do.
 **Status:** runs on a local validator only. Not deployed, not independently
 audited, not for real funds. See the README and `docs/15-SECURITY-AUDIT.md`.
 
+## Checklist for a first contribution
+
+1. Get access: ask the maintainer to add you as a collaborator, or fork the
+   repository.
+2. Install Node 24.18.1 and pnpm 12.3.4, then `pnpm install --frozen-lockfile`.
+3. Pick an open issue labelled `frontend`, and comment on it to claim it.
+4. Branch from `publish/colosseum` (`feat/frontend-...`, `fix/frontend-...`,
+   `test/frontend-...`).
+5. Make the change the issue describes, with a test where behaviour changes.
+6. Run the five commands under [Checks](#checks).
+7. Open a pull request into `publish/colosseum` with `Closes #<issue>`, the
+   result of each command, and screenshots for anything visible.
+8. Ask someone other than yourself to review it. Do not merge your own.
+
+The rest of this document explains each step.
+
 ## What you can work on
 
 Open work is in the [issues](https://github.com/mwhiterar3-ops/taskra/issues).
@@ -81,8 +97,11 @@ commits so the reviewer can see what changed. Never force-push to
 
 ## Setup
 
-Requirements: Node 24, pnpm 12. Exact versions are in `docs/13-DECISIONS.md`
-§12.
+Requirements: **Node 24.18.1** and **pnpm 12.3.4**. Both are pinned exactly:
+Node in `.nvmrc` and the `engines` field of `package.json`, pnpm in its
+`packageManager` field. Another Node version may be refused or behave
+differently. The project is developed on Ubuntu under WSL; Linux and macOS
+should work, and native Windows has not been tried.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -100,8 +119,7 @@ check you did not do.
 
 ## Checks
 
-There is no CI yet. Reviewers rely on what you report, so run these and paste
-the result lines into the pull request:
+Run these before you open a pull request and paste the result lines into it:
 
 ```bash
 pnpm format:check                       # Prettier; `pnpm format` fixes
@@ -111,8 +129,15 @@ pnpm --filter @taskra/web test
 pnpm --filter @taskra/web build
 ```
 
-If you touched anything outside `apps/web`, run `pnpm test` as well. It starts
-its own throwaway PostgreSQL and needs no setup.
+`pnpm format:check` does not look at Markdown: `.prettierignore` excludes
+`*.md`, so documentation is formatted by hand.
+
+A `quality` check runs the same five commands on every pull request, once the
+workflow in `.github/workflows/ci.yml` is on the default branch. It does **not**
+run the API, attestation-service, program or end-to-end suites, so a green
+check is not evidence about those. If you touched anything outside `apps/web`,
+run `pnpm test` as well; it starts its own throwaway PostgreSQL and needs no
+setup.
 
 Rules for tests:
 
