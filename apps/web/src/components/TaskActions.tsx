@@ -29,6 +29,7 @@ import type { TaskData } from '../hooks/use-task';
 import { useTransaction } from '../hooks/use-transaction';
 import { type ActionKind, availableActions } from '../lib/actions';
 import { formatUsdc } from '../lib/amounts';
+import { REJECTION_REASON_MAX, rejectionReasonProblem } from '../lib/rejection';
 import { useApp } from '../state/app-context';
 import { TxStatus } from './TxStatus';
 
@@ -275,8 +276,12 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
 
   function submitRejection(event: SyntheticEvent) {
     event.preventDefault();
-    if (reason.trim() === '') {
-      setFormError('Give a reason. Its hash is recorded on-chain and cannot be changed later.');
+    // Checked before the wallet is asked to sign. The API sees the text only
+    // after the transaction is confirmed; a text it would refuse then could
+    // never be stored, while its hash stays on-chain.
+    const problem = rejectionReasonProblem(reason);
+    if (problem !== null) {
+      setFormError(problem);
       return;
     }
     void send(
@@ -353,11 +358,16 @@ export function TaskActions({ data }: { readonly data: TaskData }) {
                   Reason (moves the task to a dispute)
                   <textarea
                     value={reason}
+                    maxLength={REJECTION_REASON_MAX}
                     onChange={(event) => {
                       setReason(event.target.value);
                     }}
                     rows={3}
                   />
+                  <span className="hint">
+                    {reason.length.toLocaleString('en-US')} of{' '}
+                    {REJECTION_REASON_MAX.toLocaleString('en-US')} characters
+                  </span>
                 </label>
                 <button type="submit" className="danger" disabled={disabled}>
                   Reject and open dispute
