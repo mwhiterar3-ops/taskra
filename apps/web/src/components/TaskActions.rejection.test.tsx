@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // serialize a transaction. Pointing the global at Node's class lets these tests
 // use the real instruction builder and a really signed transaction.
 vi.hoisted(() => {
-  globalThis.Uint8Array = Object.getPrototypeOf(Buffer.prototype).constructor as typeof Uint8Array;
+  const node = Object.getPrototypeOf(Buffer.prototype) as { constructor: typeof Uint8Array };
+  globalThis.Uint8Array = node.constructor;
 });
 
 import type { TaskData } from '../hooks/use-task';
@@ -105,7 +106,7 @@ const stored = (reason: string): Reply => {
   return () => Promise.resolve(detail({ rejection: { reason, reasonHash } }));
 };
 const fails =
-  (error: unknown): Reply =>
+  (error: Error): Reply =>
   () =>
     Promise.reject(error);
 
@@ -187,7 +188,7 @@ const phase = () => document.querySelector('[data-phase]')?.getAttribute('data-p
 async function reject(reason = REASON) {
   mount();
   fireEvent.click(screen.getByRole('button', { name: `Connect ${wallet.name}` }));
-  await waitFor(() => expect(submitButton()).toBeTruthy());
+  await screen.findByRole('button', { name: 'Reject and open dispute' });
   fireEvent.change(screen.getByRole('textbox', { name: /^Reason/ }), {
     target: { value: reason },
   });
@@ -212,7 +213,9 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     expect(warning.textContent).toMatch(/recorded on-chain, but its reason text was not saved/);
     expect(warning.textContent).toMatch(/could not be reached/);
     // The transaction is shown for what it is: final. Its state is not rewritten.
-    await waitFor(() => expect(phase()).toBe('finalized'), SLOW);
+    await waitFor(() => {
+      expect(phase()).toBe('finalized');
+    }, SLOW);
     expect(wallet.signedTransactions).toBe(1);
     expect(rpc.sent).toHaveLength(1);
     // The text is still on the page for the user to keep.
@@ -221,7 +224,7 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     );
 
     fireEvent.click(retryButton() as HTMLElement);
-    await waitFor(() => expect(screen.getByText(/reason text is saved/)).toBeTruthy(), SLOW);
+    await screen.findByText(/reason text is saved/, {}, SLOW);
 
     // The retry sent the same text for the same signature, and nothing to the wallet or the chain.
     expect(wallet.signedTransactions).toBe(1);
@@ -263,7 +266,7 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     const button = retryButton() as HTMLElement;
     fireEvent.click(button);
     fireEvent.click(button);
-    await waitFor(() => expect(screen.getByText(/Saving its reason text/)).toBeTruthy());
+    await screen.findByText(/Saving its reason text/);
     // While the request is in flight there is nothing to press.
     expect(retryButton()).toBeNull();
     expect(api.reports).toHaveLength(2);
@@ -271,7 +274,7 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     release(
       detail({ rejection: { reason: REASON, reasonHash: toHex(rejectionReasonHash(REASON)) } }),
     );
-    await waitFor(() => expect(screen.getByText(/reason text is saved/)).toBeTruthy(), SLOW);
+    await screen.findByText(/reason text is saved/, {}, SLOW);
     expect(api.reports).toHaveLength(2);
     expect(wallet.signedTransactions).toBe(1);
   });
@@ -292,7 +295,7 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     // The page has noticed it is signed out before the retry is offered again.
     await screen.findByText(/Connected, not signed in/);
     fireEvent.click(retryButton() as HTMLElement);
-    await waitFor(() => expect(screen.getByText(/reason text is saved/)).toBeTruthy(), SLOW);
+    await screen.findByText(/reason text is saved/, {}, SLOW);
     expect(wallet.signedMessages).toHaveLength(2);
     expect(wallet.signedTransactions).toBe(1);
     expect(rpc.sent).toHaveLength(1);
@@ -310,7 +313,7 @@ describe('rejecting a submission when the reason cannot be stored', { timeout: 2
     expect(leaving()).toBe(true);
 
     fireEvent.click(retryButton() as HTMLElement);
-    await waitFor(() => expect(screen.getByText(/reason text is saved/)).toBeTruthy(), SLOW);
+    await screen.findByText(/reason text is saved/, {}, SLOW);
     expect(leaving()).toBe(false);
   });
 });
